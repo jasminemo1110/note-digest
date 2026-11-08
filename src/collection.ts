@@ -1,4 +1,5 @@
 import { ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
+import { shortContext } from './reading-actions';
 import { articleBody, LEARNING_BOUNDARY, makeAnchor, type Anchor } from './anchors';
 
 export type Kind = 'word' | 'quote';
@@ -57,7 +58,7 @@ const quoted = (value: string) => escapeMarkdown(value).split(/\r?\n/).map(line 
 function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
 }
-export function recordMarkdown(record: LearningRecord, doc: SourceDocument): string {
+function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): string {
   const result = record.result;
   let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}\n\n${sourceLink(doc.path)} · ${record.createdAt.slice(0, 10)}\n\n${quoted(record.anchor.text)}\n\n**中文翻译**\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
@@ -71,6 +72,32 @@ export function recordMarkdown(record: LearningRecord, doc: SourceDocument): str
     }
   }
   return text + '\n';
+}
+export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+  const result = record.result;
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
+  if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
+  text += `\n\n${quoted(result.translation)}`;
+  if (record.kind === 'word') {
+    text += `\n\n**原始语境**\n\n${quoted(shortContext(record.anchor))}`;
+    for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
+      if (value) text += `\n\n**${label}**\n\n${quoted(value)}`;
+    }
+    if (result.assessment) {
+      text += `\n\n**表达判断（AI 建议）：${ASSESSMENT_LABELS[result.assessment.status]}**\n\n${quoted(result.assessment.explanation)}`;
+      if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
+    }
+  }
+  return text + '\n';
+}
+/** Only replace byte-identical generated cards. User edits and neighboring content survive. */
+export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
+  let text = current; let count = 0;
+  for (const record of records) {
+    const legacy = legacyRecordMarkdown(record, doc);
+    if (text.includes(legacy)) { text = text.replace(legacy, recordMarkdown(record, doc)); count++; }
+  }
+  return {text, count};
 }
 export function appendRecord(current: string, record: LearningRecord, doc: SourceDocument, isSource: boolean): string {
   if (current.includes(`<!-- note-digest:record:${record.id} -->`)) return current;
@@ -111,6 +138,26 @@ export class CollectionStore {
       const next = structuredClone(this.data); const record = next.records.find(record => record.id === id);
       if (record) record.active = false;
       await this.commit(next);
+    });
+  }
+  compact(path: string): Promise<string> {
+    return this.queue(async () => {
+      const doc = this.data.documents.find(doc => doc.path === path);
+      if (!doc) return '本文暂无收藏。';
+      const records = this.data.records.filter(record => record.documentId === doc.id);
+      const reports: string[] = [];
+      for (const target of [path, doc.notePath]) {
+        if (await this.port.read(target) === null) continue;
+        try {
+          let count = 0;
+          await this.port.update(target, current => {
+            if (current === null) throw new Error('笔记已不存在。');
+            const result = compactLegacyCards(current, records, doc); count = result.count; return result.text;
+          });
+          reports.push(`${target}：整理了 ${count} 张旧卡片`);
+        } catch { reports.push(`${target}：整理失败，请稍后重试`); }
+      }
+      return reports.join('\n') + '\n已手工改动或无法确认的旧卡片保持原样。';
     });
   }
   save(selection: SelectionSnapshot, input: DigestResult, kind: Kind, target: SaveTarget): Promise<SaveReport> {

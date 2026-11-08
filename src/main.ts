@@ -8,12 +8,14 @@ import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
 import { locateAnchor, renderedSelectionOffset } from './anchors';
 import type { DigestResult } from './core';
+import { readingShortcut } from './reading-actions';
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
   get secretName(): string { return this.collection.secretName; }
   private generation = 0;
   private stopped = false;
+  private quoteBusy = false;
   private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number}>();
   private selectionButton?: HTMLButtonElement;
   async onload(): Promise<void> {
@@ -25,6 +27,21 @@ export default class NoteDigestPlugin extends Plugin {
     this.addRibbonIcon('book-open-text', '打开 Note Digest', () => { void this.openPanel(); });
     this.addCommand({ id: 'open-learning-panel', name: '打开学习侧栏', callback: () => { void this.openPanel(); } });
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
+    this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到原文末尾', callback: () => { void this.capture('quote'); } });
+    this.registerDomEvent(document, 'keydown', event => {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      const selection = window.getSelection();
+      const target = event.target instanceof Element ? event.target : null;
+      const action = readingShortcut(event, {
+        reading: view?.getMode() === 'preview',
+        selectionInside: !!(view && selection?.toString().trim() && selection.anchorNode && selection.focusNode &&
+          view.contentEl.contains(selection.anchorNode) && view.contentEl.contains(selection.focusNode)),
+        editable: !!target?.closest('input, textarea, select, button, [contenteditable]:not([contenteditable="false"]), [role="textbox"], .modal-container') || !!document.querySelector('.modal-container'),
+      });
+      if (!action) return;
+      event.preventDefault(); event.stopPropagation(); this.removeSelectionButton();
+      void this.capture(action);
+    });
     this.registerDomEvent(document, 'mouseup', event => {
       if (this.selectionButton?.contains(event.target as Node)) return;
       this.removeSelectionButton();
@@ -104,7 +121,9 @@ export default class NoteDigestPlugin extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
     return leaf.view as DigestView;
   }
-  private async capture(): Promise<void> {
+  private async capture(action: 'digest' | 'quote' = 'digest'): Promise<void> {
+    if (action === 'quote' && this.quoteBusy) return;
+    if (action === 'quote') this.quoteBusy = true;
     try {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view?.file) throw new Error('请先打开 Markdown 文章并选中英文。');
@@ -133,11 +152,17 @@ export default class NoteDigestPlugin extends Plugin {
           ? renderedSelectionOffset(source, section.lineStart, section.lineEnd, paragraph.textContent ?? '', localOffset, text) : undefined;
         selected = snapshot(path, source, text, offset);
       }
-      this.generation++;
-      await this.run(selected, 'translate');
+      const requestGeneration = this.generation + 1;
+      const result = await this.run(selected, 'translate');
+      if (action === 'quote' && result && requestGeneration === this.generation && !this.stopped) {
+        const status = await this.collect(selected, result, 'quote', 'source');
+        new Notice(status);
+        if (requestGeneration === this.generation && !this.stopped) (await this.openPanel()).render(selected, result, status);
+      }
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
+    finally { if (action === 'quote') this.quoteBusy = false; }
   }
-  async run(selection: SelectionSnapshot, action: Action): Promise<void> {
+  async run(selection: SelectionSnapshot, action: Action): Promise<DigestResult | undefined> {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
@@ -152,6 +177,7 @@ export default class NoteDigestPlugin extends Plugin {
       if (await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
       panel.render(selection, result);
+      return result;
     } catch (error) {
       if (generation === this.generation) panel.render(selection, undefined, error instanceof Error ? error.message : '请求失败。');
     }

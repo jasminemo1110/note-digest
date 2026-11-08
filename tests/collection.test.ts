@@ -122,3 +122,27 @@ test('file write followed by metadata failure recovers with the same record on r
   const next=await restarted.save(select(),result,'word','source');
   assert.equal(next.record.id,first.record.id);assert.equal(next.targets[0].ok,true);assert.equal(f.files.get(path),written);
 });
+
+test('compact cards put IPA and translation before short context with no duplicate word or per-card metadata',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','both');
+  const card=recordMarkdown(saved.record,f.durable().documents[0]);
+  assert.ok(!card.includes('返回原文'));assert.ok(!card.includes(saved.record.createdAt.slice(0,10)));
+  assert.ok(!card.includes('> compelling\n'));
+  assert.ok(card.indexOf('**音标**')<card.indexOf('有说服力的'));
+  assert.ok(card.indexOf('有说服力的')<card.indexOf('原始语境'));
+  assert.ok(!card.includes('A compelling story'));
+  assert.ok(f.files.get(saved.targets[1].path)!.includes('返回原文')); // one link at notebook top
+});
+test('legacy cleanup changes only exact generated cards and is repeatable',async()=>{
+  const {compactLegacyCards}=await import('../src/collection');
+  const f=fixture();const saved=await f.store.save(snapshot(path,source,'A compelling argument.'),{translation:'有说服力的论点'},'quote','both');
+  const doc=f.durable().documents[0], rec=saved.record;
+  const old=`\n\n<!-- note-digest:record:${rec.id} -->\n### 金句：A compelling argument\\.\n\n[返回原文](/Articles/Learning.md) · ${rec.createdAt.slice(0,10)}\n\n> A compelling argument\\.\n\n**中文翻译**\n\n> 有说服力的论点\n`;
+  const before='原文不动'+old+'\n手工备注';
+  const compact=compactLegacyCards(before,[rec],doc);
+  assert.equal(compact.count,1);assert.equal(compact.text,'原文不动'+recordMarkdown(rec,doc)+'\n手工备注');
+  assert.equal(compactLegacyCards(compact.text,[rec],doc).count,0);
+  const edited=before.replace('有说服力的论点','用户修改的译文');
+  assert.deepEqual(compactLegacyCards(edited,[rec],doc),{text:edited,count:0});
+  f.files.set(path,before);await f.store.compact(path);assert.equal(f.files.get(path),compact.text);
+});

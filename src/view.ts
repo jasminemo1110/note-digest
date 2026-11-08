@@ -1,6 +1,8 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import type { Kind, SaveTarget } from './collection';
+import { shortContext } from './reading-actions';
+import { makeAnchor } from './anchors';
 import { ASSESSMENT_LABELS, type DigestResult, type SelectionSnapshot } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
@@ -23,9 +25,16 @@ export class DigestView extends ItemView {
     }
     if (status) el.createEl('p', { text: status, attr: { role: 'status', 'aria-live': 'polite' } });
     if (!result) { this.renderCollection(selection.path); return; }
+    if (result.assessment) el.createEl('p', { text: result.pronunciation ?? '音标：不适用或无法可靠确定', cls: 'note-digest-result' });
+    el.createEl('p', { text: result.translation, cls: 'note-digest-result' });
     if (result.assessment) {
-      el.createEl('h3', { text: '音标' });
-      el.createEl('p', { text: result.pronunciation ?? '不适用或无法可靠确定', cls: 'note-digest-result' });
+      el.createEl('h3', { text: '原始语境' });
+      el.createEl('blockquote', { text: shortContext(makeAnchor(selection.source, selection.start, selection.text)) });
+    }
+    for (const [key, label] of [['meaning', '语境含义'], ['usage', '用法'], ['example', '例句']] as const) {
+      if (result[key]) { el.createEl('h3', { text: label }); el.createEl('p', { text: result[key], cls: 'note-digest-result' }); }
+    }
+    if (result.assessment) {
       el.createEl('h3', { text: '表达判断 · ' + ASSESSMENT_LABELS[result.assessment.status] });
       el.createEl('p', { text: result.assessment.explanation, cls: 'note-digest-result' });
       if (result.assessment.correction) {
@@ -33,9 +42,6 @@ export class DigestView extends ItemView {
         el.createEl('p', { text: result.assessment.correction, cls: 'note-digest-result' });
       }
       el.createEl('p', { text: '以上为 AI 结合当前语境的判断；建议改法不会自动修改原文。', cls: 'note-digest-muted' });
-    }
-    for (const [key, label] of [['translation', '中文翻译'], ['meaning', '语境含义'], ['usage', '用法'], ['example', '例句']] as const) {
-      if (result[key]) { el.createEl('h3', { text: label }); el.createEl('p', { text: result[key], cls: 'note-digest-result' }); }
     }
     el.createEl('h3', { text: '收藏到学习笔记' });
     const label = el.createEl('label', { text: '保存位置 ' });
@@ -69,6 +75,14 @@ export class DigestView extends ItemView {
     if (!records.length) return;
     const list = this.contentEl.createDiv({ cls: 'note-digest-collection' });
     list.createEl('h3', { text: `本文收藏（${records.length}）` });
+    const compact = list.createEl('button', {text: '整理旧版学习卡片'});
+    const compactStatus = list.createEl('p', {cls: 'note-digest-result', attr: {role: 'status'}});
+    compact.onclick = async () => {
+      compact.disabled = true;
+      try { compactStatus.textContent = await this.plugin.collection.compact(path); }
+      catch { compactStatus.textContent = '整理失败，请稍后重试。'; }
+      finally { compact.disabled = false; }
+    };
     const notePath = this.plugin.collection.notePathFor(path);
     if (notePath && this.app.vault.getAbstractFileByPath(notePath)) {
       const open = list.createEl('button', { text: '打开独立学习笔记' });
@@ -77,6 +91,7 @@ export class DigestView extends ItemView {
     for (const record of records) {
       const row = list.createDiv({cls: 'note-digest-saved-row'});
       row.createEl('p', { text: `${record.kind === 'word' ? '词语' : '金句'}：${record.anchor.text}` });
+      row.createEl('p', { text: record.result.translation, cls: 'note-digest-saved-translation' });
       const locate = row.createEl('button', { text: '定位原文' });
       locate.onclick = () => { void this.plugin.revealRecord(path, record.id); };
       const remove = row.createEl('button', { text: '取消收藏高亮' });
