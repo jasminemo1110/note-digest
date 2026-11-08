@@ -3,3 +3,8 @@
 .note-digest-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .note-digest-result, .note-digest-panel blockquote { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .note-digest-selection { position: fixed; z-index: 1000; box-shadow: var(--shadow-s); }
+.note-digest-highlight { color: inherit; background: var(--text-highlight-bg); border-radius: 2px; }
+.note-digest-highlight[data-kind="word"] { border-bottom: 2px solid var(--interactive-accent); }
+.note-digest-saved-row { padding: 8px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.note-digest-saved-row button { margin: 0 6px 4px 0; }
+.note-digest-collection { margin-top: 20px; }

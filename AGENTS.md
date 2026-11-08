@@ -14,7 +14,11 @@
 - src/core.ts：纯数据契约、原文定位、校验与安全插入。
 - src/provider.ts：AI 请求与语言策略，不操作笔记。
 - src/settings.ts：非敏感设置与 SecretStorage 选择界面。
-- 后续存储模块负责收藏、去重、目标笔记写入；视图不得自行覆盖文件。
+- src/collection.ts：版本化收藏数据、同语境去重、串行事务、逐目标幂等追加；视图不得自行覆盖文件。
+- src/vault-storage.ts：Vault.process、独占创建、未同步编辑保护。
+- src/anchors.ts：排除生成学习区、段落锚点及阅读选区定位。
+- src/highlights.ts：原文范围核对和 DOM 高亮；不修改源 Markdown。
+- 设置与收藏共用 CollectionStore 持久化队列，禁止 saveData 只写设置而覆盖收藏。
 
 ## 数据保护
 - 请求绑定来源文件、内容快照和选区；原文变更后不得应用旧结果。

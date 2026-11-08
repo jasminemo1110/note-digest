@@ -1,16 +1,25 @@
-import { MarkdownView, Notice, Plugin, TFile, requestUrl } from 'obsidian';
+import { MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
 import { snapshot, insertTranslation, type SelectionSnapshot, type Action } from './core';
 import { digest } from './provider';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
+import { CollectionStore, loadCollection, type Kind, type SaveTarget } from './collection';
+import { vaultStorage } from './vault-storage';
+import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
+import { locateAnchor, renderedSelectionOffset } from './anchors';
+import type { DigestResult } from './core';
 
 export default class NoteDigestPlugin extends Plugin {
-  secretName = '';
+  collection!: CollectionStore;
+  get secretName(): string { return this.collection.secretName; }
   private generation = 0;
+  private stopped = false;
+  private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number}>();
   private selectionButton?: HTMLButtonElement;
   async onload(): Promise<void> {
+    this.stopped = false;
     const data = await this.loadData();
-    this.secretName = typeof data?.secretName === 'string' ? data.secretName : '';
+    this.collection = new CollectionStore(loadCollection(data), vaultStorage(this.app, value => this.saveData(value)));
     this.registerView(VIEW_TYPE, leaf => new DigestView(leaf, this));
     this.addSettingTab(new DigestSettings(this.app, this));
     this.addRibbonIcon('book-open-text', '打开 Note Digest', () => { void this.openPanel(); });
@@ -31,9 +40,62 @@ export default class NoteDigestPlugin extends Plugin {
       button.onclick = () => { void this.capture(); this.removeSelectionButton(); };
       this.selectionButton = button;
     });
+    this.registerMarkdownPostProcessor(async (element, context) => {
+      const section = context.getSectionInfo(element);
+      if (section) this.renderedSections.set(element, {path: context.sourcePath, lineStart: section.lineStart, lineEnd: section.lineEnd});
+      const records = this.collection.recordsFor(context.sourcePath);
+      if (!records.length) return;
+      const file = this.app.vault.getAbstractFileByPath(context.sourcePath);
+      if (!(file instanceof TFile)) return;
+      const source = await this.app.vault.cachedRead(file);
+      if (this.stopped) return;
+      const info = context.getSectionInfo(element);
+      if (!info) return;
+      const child = new MarkdownRenderChild(element);
+      child.register(() => clearHighlights(element)); context.addChild(child);
+      const candidates = element.matches('p') ? [element] : Array.from(element.querySelectorAll('p'));
+      for (const paragraph of candidates) {
+        if (paragraph.closest('pre, code, .internal-embed')) continue;
+        if (candidates.filter(other => other.textContent === paragraph.textContent).length !== 1) continue;
+        applyHighlights(paragraph, highlightRanges(source, info.lineStart, info.lineEnd, paragraph.textContent ?? '', records));
+      }
+    });
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+      void this.collection.rename(oldPath, file.path).then(() => this.refreshHighlights()).catch(() => new Notice('收藏来源路径更新失败，请重新加载后检查。'));
+    }));
+    this.registerEvent(this.app.vault.on('delete', file => {
+      void this.collection.rename(file.path, null).then(() => this.refreshHighlights()).catch(() => new Notice('收藏来源状态更新失败。'));
+    }));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => { this.removeSelectionButton(); }));
   }
-  onunload(): void { this.generation++; this.removeSelectionButton(); }
+  onunload(): void {
+    this.stopped = true; this.generation++; this.removeSelectionButton();
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) if (leaf.view instanceof MarkdownView) clearHighlights(leaf.view.contentEl);
+  }
+  refreshHighlights(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      if (leaf.view instanceof MarkdownView && leaf.view.getMode() === 'preview') leaf.view.previewMode.rerender(true);
+    }
+  }
+  async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget): Promise<string> {
+    const report = await this.collection.save(selection, result, kind, target);
+    this.refreshHighlights();
+    return report.targets.map(item => `${item.ok ? '✓' : '未完成'} ${item.path}：${item.message}`).join('\n');
+  }
+  async removeHighlight(id: string): Promise<void> {
+    await this.collection.deactivate(id); this.refreshHighlights();
+    new Notice('已取消收藏高亮；已写入的笔记保留，避免删除你的编辑。');
+  }
+  async revealRecord(path: string, id: string): Promise<void> {
+    const record = this.collection.recordsFor(path).find(record => record.id === id);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!record || !(file instanceof TFile)) { new Notice('原文不可用。'); return; }
+    const source = await this.app.vault.read(file);
+    const offset = locateAnchor(source, record.anchor);
+    if (offset === null) { new Notice('原段落已变化或有重复，无法准确定位；收藏快照仍保留。'); return; }
+    const line = source.slice(0, offset).split('\n').length - 1;
+    await this.app.workspace.getLeaf(false).openFile(file, {eState: {line}});
+  }
   private removeSelectionButton(): void { this.selectionButton?.remove(); this.selectionButton = undefined; }
   async openPanel(): Promise<DigestView> {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0] ?? this.app.workspace.getRightLeaf(false);
@@ -47,6 +109,7 @@ export default class NoteDigestPlugin extends Plugin {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view?.file) throw new Error('请先打开 Markdown 文章并选中英文。');
       const path = view.file.path;
+      if (this.collection.isLearningNote(path)) throw new Error('请从原文章选择内容。');
       let selected: SelectionSnapshot;
       if (view.getMode() === 'source') {
         selected = snapshot(path, view.editor.getValue(), view.editor.getSelection(), view.editor.posToOffset(view.editor.getCursor('from')));
@@ -54,7 +117,21 @@ export default class NoteDigestPlugin extends Plugin {
         const range = window.getSelection();
         if (!range?.anchorNode || !range.focusNode || !view.contentEl.contains(range.anchorNode) || !view.contentEl.contains(range.focusNode)) throw new Error('请在原文中选择英文。');
         const text = range.toString();
-        selected = snapshot(path, await this.app.vault.read(view.file), text);
+        const nativeRange = range.getRangeAt(0).cloneRange();
+        const parent = nativeRange.startContainer.nodeType === 1 ? nativeRange.startContainer as Element : nativeRange.startContainer.parentElement;
+        const paragraph = parent?.closest('p');
+        let sectionElement: HTMLElement | null = paragraph ?? null;
+        while (sectionElement && !this.renderedSections.has(sectionElement)) sectionElement = sectionElement.parentElement;
+        const section = sectionElement ? this.renderedSections.get(sectionElement) : undefined;
+        let localOffset: number | undefined;
+        if (paragraph && paragraph.contains(nativeRange.endContainer)) {
+          const prefix = nativeRange.cloneRange(); prefix.selectNodeContents(paragraph);
+          prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset); localOffset = prefix.toString().length;
+        }
+        const source = await this.app.vault.read(view.file);
+        const offset = paragraph && localOffset !== undefined && section?.path === path
+          ? renderedSelectionOffset(source, section.lineStart, section.lineEnd, paragraph.textContent ?? '', localOffset, text) : undefined;
+        selected = snapshot(path, source, text, offset);
       }
       this.generation++;
       await this.run(selected, 'translate');

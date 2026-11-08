@@ -1,3 +1,4 @@
+import { articleBody } from './anchors';
 export type SourceLanguage = 'en' | 'ja';
 export type Action = 'translate' | 'explain';
 export interface SelectionSnapshot {
@@ -18,11 +19,12 @@ export interface DigestResult {
 }
 export function snapshot(path: string, source: string, text: string, offset?: number): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
-  const start = offset ?? source.indexOf(text);
-  if (!Number.isInteger(start) || start < 0 || source.slice(start, start + text.length) !== text) throw new Error('无法对应原文，请改用编辑模式重新选择。');
-  if (offset === undefined && source.indexOf(text, start + 1) !== -1) throw new Error('原文有多处相同文本，请改用编辑模式精确选择。');
+  const body = articleBody(source);
+  const start = offset ?? body.indexOf(text);
+  if (!Number.isInteger(start) || start < 0 || body.slice(start, start + text.length) !== text) throw new Error('无法对应原文，请改用编辑模式重新选择。');
+  if (offset === undefined && body.indexOf(text, start + 1) !== -1) throw new Error('原文有多处相同文本，请改用编辑模式精确选择。');
   return { path, source, text, start, end: start + text.length,
-    context: source.slice(Math.max(0, start - 1200), Math.min(source.length, start + text.length + 1200)) };
+    context: body.slice(Math.max(0, start - 1200), Math.min(body.length, start + text.length + 1200)) };
 }
 export function validateResult(value: unknown, action: Action): DigestResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('AI 返回格式异常，请重试。');
