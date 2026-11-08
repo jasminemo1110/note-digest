@@ -46,3 +46,9 @@ CollectionStore 通过串行队列统一保存 SecretStorage 名称、来源 reg
 侧栏区分 idle/translate/explain/summarize；长选区 capture 仅打开 idle，不发 AI 请求。翻译按本地段落范围顺序请求，逐次检查世代；原文身份和英文字段从本地生成，不接受模型重建。摘要是独立 summary 字段，不能通过翻译收藏校验。自然表达的 assessment 仍参与结构校验和旧格式识别，但不展示、不导出其判断模块。
 
 学习区使用 word/quote 两组边界标记，卡片四级标题处于三级分类标题之下。新条目写到所属组末尾，不重写已有卡片；分组标记损坏则拒绝写入。显式整理同时支持最初冗余版与 0.2.1 紧凑版卡片，只有完整匹配才移动和重新生成，其余文本原样保留。
+
+## 0.2.3 卡片删除事务
+
+CollectionStore 的 removeNotes 复用串行队列。先持久化 active=false 与 deletionPending=true，再逐目标经 Vault.process 删除，逐次更新 savedTo；全部完成才清除待删除状态。高亮只读取活动记录；侧栏额外展示留有笔记或删除待重试记录。文件写入成功但状态保存失败可通过已缺失的记录标记幂等恢复。
+
+新卡片含 record / record-end 标记；删除检查唯一且非嵌套的边界，并验证所属学习区域。无结束标记的历史卡片按各历史 formatter 完整匹配，无法确认时拒绝自动删除。保留收藏快照以便重试及重新收藏，不删除整个 Markdown 文件，也不删除相邻分组。

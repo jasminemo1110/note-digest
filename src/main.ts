@@ -104,8 +104,14 @@ export default class NoteDigestPlugin extends Plugin {
     await this.collection.deactivate(id); this.refreshHighlights();
     new Notice('已取消收藏高亮；已写入的笔记保留，避免删除你的编辑。');
   }
+  async removeNotes(id: string): Promise<string> {
+    try {
+      const report=await this.collection.removeNotes(id);
+      return report.targets.map(target=>`${target.ok?'✓':'未完成'} ${target.path}：${target.message}`).join('\n');
+    } finally { this.refreshHighlights(); }
+  }
   async revealRecord(path: string, id: string): Promise<void> {
-    const record = this.collection.recordsFor(path).find(record => record.id === id);
+    const record = this.collection.recordsFor(path,true).find(record => record.id === id);
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!record || !(file instanceof TFile)) { new Notice('原文不可用。'); return; }
     const source = await this.app.vault.read(file);

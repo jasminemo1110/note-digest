@@ -21,8 +21,8 @@ function setup() {
   class ItemView {contentEl=document.createElement('div');app=app;constructor(){document.body.append(this.contentEl);}}
   const module={exports:{} as any};
   new Function('require','module','exports',bundled.outputFiles[0].text)(()=>({ItemView}),module,module.exports);
-  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return '已保存';},insert:async(...args:any[])=>calls.push(['insert',...args])};
-  return {view:new module.exports.DigestView({},plugin),document,calls};
+  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return '已保存';},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args])};
+  return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
 const selected=snapshot('a.md','A compelling argument.','compelling');
 const explained:DigestResult={translation:'有说服力的',pronunciation:'/kəmˈpelɪŋ/',meaning:'含义',usage:'用法',example:'例句',assessment:{status:'natural',explanation:'不应显示这句话',correction:null}};
@@ -51,4 +51,17 @@ test('long selection stays blank until chosen action, then displays aligned bili
   view.render(long,{translation:'第一。\n\n第二。',paragraphs:[{source:'First.',start:0,end:6,translation:'第一。'},{source:'Second.',start:8,end:15,translation:'第二。'}]});
   const pairs=document.querySelectorAll('.note-digest-paragraph');assert.equal(pairs.length,2);assert.ok(pairs[0].textContent!.startsWith('First.第一。'));assert.ok(pairs[1].textContent!.startsWith('Second.第二。'));
   view.render(long,{translation:'',summary:'摘要内容'},'','summarize');assert.ok(document.body.textContent!.includes('摘要内容'));assert.equal(document.querySelector('.note-digest-save'),null);
+});
+
+
+test('inactive retained card exposes independent delete button and invokes only explicit deletion',async()=>{
+  const {view,document,calls,plugin}=setup();
+  (plugin.collection as any).recordsFor=()=>[{id:'saved-word',kind:'word',anchor:{text:'compelling'},result:{translation:'有说服力的'},active:false,savedTo:['a.md']}];
+  view.render(selected,{translation:'有说服力的'});
+  const buttons=[...document.querySelectorAll('button')];
+  const cancel=buttons.find(button=>button.textContent==='取消收藏高亮')!;
+  const erase=buttons.find(button=>button.textContent==='取消高亮并删除笔记')!;
+  assert.equal(cancel.disabled,true);assert.equal(erase.disabled,false);assert.equal(calls.length,0);
+  await erase.onclick!(new (domEvent(document))('click') as any);
+  assert.deepEqual(calls[0],['removeNotes','saved-word']);assert.ok(document.body.textContent!.includes('已删除'));
 });

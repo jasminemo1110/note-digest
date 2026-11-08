@@ -100,7 +100,7 @@ export class DigestView extends ItemView {
   }
   private renderCollection(path: string): void {
     this.contentEl.querySelector('.note-digest-collection')?.remove();
-    const records=this.plugin.collection.recordsFor(path);if(!records.length)return;
+    const records=this.plugin.collection.recordsFor(path,true);if(!records.length)return;
     const list=this.contentEl.createDiv({cls:'note-digest-collection'});
     list.createEl('h3',{text:`本文收藏（${records.length}）`});
     const compact=list.createEl('button',{text:'整理旧版卡片并分组'});
@@ -125,11 +125,28 @@ export class DigestView extends ItemView {
         row.createEl('p',{text:record.result.translation,cls:'note-digest-saved-translation'});
         const locate=row.createEl('button',{text:'定位原文'});
         locate.onclick=()=>{void this.plugin.revealRecord(path,record.id);};
+        if (!record.active) row.createEl('p',{text:record.deletionPending?'删除尚未完成，可重试':'已取消高亮，学习笔记保留',cls:'note-digest-muted'});
         const remove=row.createEl('button',{text:'取消收藏高亮'});
+        remove.disabled=!record.active;
         remove.onclick=async()=>{
           remove.disabled=true;
           try { await this.plugin.removeHighlight(record.id);this.renderCollection(path); }
           catch { remove.disabled=false;remove.textContent='取消失败，点击重试'; }
+        };
+        const erase=row.createEl('button',{text:'取消高亮并删除笔记'});
+        const message=row.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+        erase.onclick=async()=>{
+          erase.disabled=true;remove.disabled=true;message.textContent='正在检查并删除对应卡片…';
+          try {
+            const report=await this.plugin.removeNotes(record.id);
+            this.renderCollection(path);
+            // Keep per-target feedback visible even after the record disappears.
+            this.contentEl.querySelector('[data-note-digest-deletion]')?.remove();
+            const notice=this.contentEl.createEl('p',{text:report,cls:'note-digest-result',attr:{role:'status'}});
+            notice.dataset.noteDigestDeletion='true';
+          } catch(error) {
+            message.textContent=error instanceof Error?error.message:'删除失败，请重试';erase.disabled=false;
+          }
         };
       }
     }

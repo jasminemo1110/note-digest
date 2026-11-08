@@ -8,7 +8,7 @@ export type SaveTarget = 'source' | 'note' | 'both';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
-  result: DigestResult; createdAt: string; active: boolean; savedTo: string[];
+  result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean;
 }
 export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
 export interface StoragePort {
@@ -44,7 +44,7 @@ export function loadCollection(input: unknown): CollectionData {
   const recordIds = new Set<string>();
   for (const record of records) {
     if (!record || typeof record.id !== 'string' || !ID.test(record.id) || recordIds.has(record.id) || !ids.has(record.documentId) ||
-        !['word', 'quote'].includes(record.kind) || typeof record.active !== 'boolean' || !Array.isArray(record.savedTo) || !record.savedTo.every(validPath) || typeof record.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(record.createdAt) ||
+        !['word', 'quote'].includes(record.kind) || typeof record.active !== 'boolean' || (record.deletionPending !== undefined && typeof record.deletionPending !== 'boolean') || !Array.isArray(record.savedTo) || !record.savedTo.every(validPath) || typeof record.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(record.createdAt) ||
         !record.anchor || typeof record.anchor.block !== 'string' || record.anchor.block.length > 24000 ||
         typeof record.anchor.text !== 'string' || !record.anchor.text.trim() || record.anchor.text.length > 12000 ||
         !Number.isInteger(record.anchor.offset) || record.anchor.offset < 0 ||
@@ -91,7 +91,7 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
   }
   return text + '\n';
 }
-export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+function groupedRecordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   const result = record.result;
   let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
@@ -107,6 +107,32 @@ export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): st
     }
   }
   return text + '\n';
+}
+export function recordMarkdown(record: LearningRecord, doc: SourceDocument): string {
+  return groupedRecordMarkdown(record, doc) + `<!-- note-digest:record-end:${record.id} -->\n`;
+}
+export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument): {text: string; removed: boolean} {
+  const marker = `<!-- note-digest:record:${record.id} -->`;
+  const start = current.indexOf(marker);
+  if (start < 0) return {text: current, removed: false};
+  if (current.indexOf(marker, start + marker.length) >= 0) throw new Error('记录标记重复，无法安全确定要删除的卡片。');
+  const boundary = current.indexOf(LEARNING_BOUNDARY);
+  const ownedNote = current.includes(`<!-- note-digest:document:${doc.id} -->`);
+  if (!ownedNote && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length)) throw new Error('卡片不在可确认的学习笔记区域，已保留原文。');
+  const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
+  const end = current.indexOf(endMarker);
+  if (end >= 0) {
+    if (end < start || current.indexOf(endMarker, end + endMarker.length) >= 0 ||
+        /<!-- note-digest:(?:record:|group:|end:)/.test(current.slice(start + marker.length, end))) throw new Error('卡片边界损坏，已保留内容。');
+    const finish = end + endMarker.length + (current[end + endMarker.length] === '\n' ? 1 : 0);
+    return {text: current.slice(0,start) + current.slice(finish), removed: true};
+  }
+  // Historical cards have no closing marker. Delete only exact known output, leaving manual additions untouched.
+  for (const candidate of [groupedRecordMarkdown(record,doc), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)]) {
+    const index = current.indexOf(candidate);
+    if (index >= 0 && index + candidate.indexOf(marker) === start) return {text:current.slice(0,index)+current.slice(index+candidate.length),removed:true};
+  }
+  throw new Error('旧卡片已手工修改且缺少结束标记，无法安全确定删除范围，请手动删除该卡片。');
 }
 function groupTokens(kind: Kind) {
   return {start: `<!-- note-digest:group:${kind} -->`, end: `<!-- note-digest:end:${kind} -->`};
@@ -124,6 +150,9 @@ function appendGrouped(current: string, record: LearningRecord, doc: SourceDocum
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
   let text = current; let count = 0;
   for (const record of records) {
+    if (text.includes(recordMarkdown(record, doc))) continue;
+    const grouped = groupedRecordMarkdown(record, doc);
+    if (text.includes(grouped)) { text = text.replace(grouped,recordMarkdown(record,doc)); count++; continue; }
     const candidates = [legacyRecordMarkdown(record, doc), previousRecordMarkdown(record, doc)];
     const old = candidates.find(candidate => text.includes(candidate));
     if (old) { text = appendGrouped(text.replace(old, ''), record, doc); count++; }
@@ -145,9 +174,9 @@ export class CollectionStore {
   }
   private async commit(next: CollectionData): Promise<void> { await this.port.persist(structuredClone(next)); this.data = structuredClone(next); }
   get secretName(): string { return this.data.secretName; }
-  recordsFor(path: string): LearningRecord[] {
+  recordsFor(path: string, includeInactive = false): LearningRecord[] {
     const doc = this.data.documents.find(doc => doc.path === path);
-    return doc ? structuredClone(this.data.records.filter(record => record.documentId === doc.id && record.active && record.savedTo.length > 0)) : [];
+    return doc ? structuredClone(this.data.records.filter(record => record.documentId === doc.id && (includeInactive ? record.savedTo.length > 0 || record.deletionPending : record.active && record.savedTo.length > 0))) : [];
   }
   notePathFor(path: string): string | undefined { return this.data.documents.find(doc => doc.path === path)?.notePath; }
   isLearningNote(path: string): boolean { return this.data.documents.some(doc => doc.notePath === path); }
@@ -169,6 +198,39 @@ export class CollectionStore {
       const next = structuredClone(this.data); const record = next.records.find(record => record.id === id);
       if (record) record.active = false;
       await this.commit(next);
+    });
+  }
+  removeNotes(id: string): Promise<{targets: SaveReport['targets']; complete: boolean}> {
+    return this.queue(async () => {
+      const next=structuredClone(this.data);
+      const record=next.records.find(record=>record.id===id);
+      if (!record) throw new Error('收藏记录不存在。');
+      const doc=next.documents.find(doc=>doc.id===record.documentId)!;
+      const paths=[...new Set([doc.path,doc.notePath,...record.savedTo].filter((path): path is string=>path!==null))];
+      record.active=false;record.deletionPending=true;
+      // Durable cancellation and retry identity before modifying either note.
+      await this.commit(next);
+      const targets: SaveReport['targets']=[];
+      for (const path of paths) {
+        try {
+          let removed=false;
+          if (await this.port.read(path)!==null) {
+            await this.port.update(path,current=>{
+              if (current===null) throw new Error('文件已移动或删除，请重试。');
+              const result=removeSavedRecord(current,record,doc);removed=result.removed;return result.text;
+            });
+          }
+          record.savedTo=record.savedTo.filter(saved=>saved!==path);
+          await this.commit(next);
+          targets.push({path,ok:true,message:removed?'已删除对应学习卡片':'没有对应卡片，无需删除'});
+        } catch(error) {
+          targets.push({path,ok:false,message:error instanceof Error?error.message:'删除失败，请重试'});
+        }
+      }
+      const complete=targets.every(target=>target.ok);
+      record.deletionPending=!complete;
+      await this.commit(next);
+      return {targets,complete};
     });
   }
   compact(path: string): Promise<string> {
@@ -211,7 +273,7 @@ export class CollectionStore {
         record = {id: this.uuid(), documentId: doc.id, kind, anchor, context: selection.context,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
       }
-      record.active = true;
+      record.active = true; record.deletionPending = false;
       // Durable intent before external writes: retries retain identity even after a partial failure/crash.
       await this.commit(next);
       const paths = target === 'both' ? [selection.path, doc.notePath] : [target === 'source' ? selection.path : doc.notePath];

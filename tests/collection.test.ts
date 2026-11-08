@@ -165,3 +165,66 @@ test('group insertion preserves edited entries and refuses broken group boundari
   const before=f.files.get(path);const report=await f.store.save(second,result,'word','source');
   assert.equal(report.targets[0].ok,false);assert.equal(f.files.get(path),before);
 });
+
+test('delete removes both saved copies and highlight, preserving source and other contexts',async()=>{
+  const f=fixture();const first=await f.store.save(select(),result,'word','both');
+  const other=await f.store.save(snapshot(path,source,'compelling',source.lastIndexOf('compelling')),result,'word','both');
+  const deleted=await f.store.removeNotes(first.record.id);assert.equal(deleted.complete,true);
+  assert.equal(articleBody(f.files.get(path)!),source);
+  for(const target of first.targets){
+    const text=f.files.get(target.path)!;assert.ok(!text.includes(`note-digest:record:${first.record.id}`));assert.ok(text.includes(`note-digest:record:${other.record.id}`));
+  }
+  assert.equal(f.store.recordsFor(path).length,1);assert.equal(f.store.recordsFor(path,true).length,1);
+  assert.equal((await f.store.removeNotes(first.record.id)).complete,true);
+});
+test('inactive retained records remain deletable; missing files are not recreated',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','both');
+  await f.store.deactivate(saved.record.id);assert.equal(f.store.recordsFor(path).length,0);assert.equal(f.store.recordsFor(path,true).length,1);
+  f.files.delete(saved.targets[1].path);await f.store.removeNotes(saved.record.id);
+  assert.equal(f.files.has(saved.targets[1].path),false);assert.equal(f.store.recordsFor(path,true).length,0);
+});
+test('partially failed deletion cancels highlight and survives reload for retry',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','both');f.fail('Digest/');
+  const partial=await f.store.removeNotes(saved.record.id);assert.equal(partial.complete,false);assert.equal(f.store.recordsFor(path).length,0);
+  assert.equal(f.store.recordsFor(path,true)[0].deletionPending,true);
+  const afterSource=f.files.get(path);f.fail('');const restarted=new CollectionStore(loadCollection(f.durable()),f.port);
+  const retry=await restarted.removeNotes(saved.record.id);assert.equal(retry.complete,true);assert.equal(f.files.get(path),afterSource);
+  assert.equal(restarted.recordsFor(path,true).length,0);
+});
+test('metadata failure before cancellation leaves both documents intact',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','both');const before=new Map(f.files);
+  f.failPersist(true);await assert.rejects(f.store.removeNotes(saved.record.id));assert.deepEqual(f.files,before);assert.equal(f.store.recordsFor(path).length,1);
+});
+test('bounded edited card can be removed without deleting manual notes outside it',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','source');
+  const end=`<!-- note-digest:record-end:${saved.record.id} -->`;
+  f.files.set(path,f.files.get(path)!.replace(end,'这张卡片的补充\n'+end)+'\n卡片外的私人备注');
+  await f.store.removeNotes(saved.record.id);const remaining=f.files.get(path)!;
+  assert.ok(!remaining.includes('这张卡片的补充'));assert.ok(remaining.includes('卡片外的私人备注'));assert.equal(articleBody(remaining),source);
+});
+test('legacy exact card deletes safely while modified unbounded legacy card is retained',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','source');
+  const old=f.files.get(path)!.replace(`<!-- note-digest:record-end:${saved.record.id} -->\n`,'');
+  f.files.set(path,old.replace('有说服力的','用户修改的译文'));
+  const edited=f.files.get(path);const blocked=await f.store.removeNotes(saved.record.id);
+  assert.equal(blocked.complete,false);assert.equal(f.files.get(path),edited);
+  f.files.set(path,old);assert.equal((await f.store.removeNotes(saved.record.id)).complete,true);
+});
+test('duplicate markers and nested card boundaries stop deletion',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','source');const base=f.files.get(path)!;
+  const marker=`<!-- note-digest:record:${saved.record.id} -->`;
+  for(const broken of [base+'\n'+marker,base.replace(`<!-- note-digest:record-end:${saved.record.id} -->`,'<!-- note-digest:record:another -->\n'+`<!-- note-digest:record-end:${saved.record.id} -->`)]){
+    f.files.set(path,broken);assert.equal((await f.store.removeNotes(saved.record.id)).complete,false);assert.equal(f.files.get(path),broken);
+  }
+});
+test('delete then save again recreates one card per target and reactivates highlight',async()=>{
+  const f=fixture();const first=await f.store.save(select(),result,'word','both');await f.store.removeNotes(first.record.id);
+  const again=await f.store.save(select(),result,'word','both');assert.equal(again.record.id,first.record.id);assert.equal(f.store.recordsFor(path).length,1);
+  for(const target of again.targets) assert.equal(f.files.get(target.path)!.split(`<!-- note-digest:record:${again.record.id} -->`).length,2);
+});
+test('write success followed by metadata failure leaves a retryable deletion intent',async()=>{
+  const f=fixture();const saved=await f.store.save(select(),result,'word','both');const persist=f.port.persist;let count=0;
+  f.port.persist=async data=>{if(++count===2)throw new Error('状态写入失败');await persist(data);};
+  const partial=await f.store.removeNotes(saved.record.id);assert.equal(partial.complete,false);
+  const restarted=new CollectionStore(loadCollection(f.durable()),f.port);assert.equal((await restarted.removeNotes(saved.record.id)).complete,true);
+});
