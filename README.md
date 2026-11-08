@@ -1,0 +1,37 @@
+# Note Digest
+
+在 Obsidian 原文旁读懂英文，留下语境中的词语和金句。
+
+独立的 Obsidian 桌面插件，V1 面向 Markdown 英文文章，以中文提供翻译与语境解释。当前处于开发阶段，功能状态见[路线图](docs/ROADMAP.md)。
+
+## 目标体验
+
+- 选中英文，点击 Digest 或使用命令，在右侧学习栏查看翻译与解释。
+- 翻译默认只用于当前阅读；可主动插到原文下方或句后括号中。
+- 收藏词语和金句到原文末尾、独立学习笔记，或同时保存；已收藏内容在原文高亮。
+- 长文可先 Summarize，再按摘要小节翻译；也可直接翻译本节或全文。
+- Digest 文件夹可保存每篇文章的词语、金句及完整双语笔记。
+
+## 开发
+
+需要 Node.js 20+。
+
+```sh
+npm ci
+npm test
+npm run build
+```
+
+构建产物为 `main.js`。将 `main.js`、`manifest.json`、`styles.css` 复制到测试仓库的 `.obsidian/plugins/note-digest/`，在 Obsidian 中启用社区插件。先用示例仓库测试，不要直接安装到重要笔记仓库。
+
+最低 Obsidian 版本见 manifest；使用系统 SecretStorage 选择 DeepSeek 密钥，插件只保存密钥名称。只有主动请求时才发送所选文本和必要上下文。
+
+## 文档
+
+- [产品方案](docs/PRODUCT.md)
+- [开发路线图](docs/ROADMAP.md)
+- [验证流程](docs/TESTING.md)
+- [架构决定](docs/ARCHITECTURE.md)
+- [来源说明](THIRD_PARTY_NOTICES.md)
+
+项目由 X Digest 的学习体验延伸而来，YouTube Digest 是相关产品探索的起点。当前实现独立编写，公开发布时进一步整理项目关联及致谢；如引入上游代码，须同时保留对应许可。
