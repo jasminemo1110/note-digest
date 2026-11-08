@@ -26,3 +26,5 @@ provider 仅请求和返回结构化值，限制响应字段长度。DOM 使用�
 - https://github.com/obsidianmd/obsidian-developer-docs/blob/main/en/Plugins/User%20interface/Views.md
 
 最低宿主版本以 SecretStorage 可用版本及实际验证为准；初始设为 1.11.5。真实运行验证前不能宣称兼容已确认。
+
+DeepSeek 请求依据当前官方接口使用 deepseek-flash 非思考模式，JSON Output；参考 https://api-docs.deepseek.com/api/create-chat-completion/ 。模型质量仍需真实验证。

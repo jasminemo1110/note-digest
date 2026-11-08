@@ -4,6 +4,12 @@
 
 独立的 Obsidian 桌面插件，V1 面向 Markdown 英文文章，以中文提供翻译与语境解释。当前处于开发阶段，功能状态见[路线图](docs/ROADMAP.md)。
 
+## 当前开发版
+
+已实现：右侧学习栏、阅读/编辑模式选区命令、选区 Digest 按钮、英文翻译及语境解释、普通段落译文插入、SecretStorage 设置和过期结果保护。12 项自动测试与构建通过；尚未在真实 Obsidian 或实际 AI 服务中验证。
+
+尚未实现：收藏、汇总笔记、原文高亮、长文摘要、按节/全文翻译和原位双语阅读层。下列为 V1 目标，不是当前已支持清单。
+
 ## 目标体验
 
 - 选中英文，点击 Digest 或使用命令，在右侧学习栏查看翻译与解释。
@@ -23,6 +29,8 @@ npm run build
 ```
 
 构建产物为 `main.js`。将 `main.js`、`manifest.json`、`styles.css` 复制到测试仓库的 `.obsidian/plugins/note-digest/`，在 Obsidian 中启用社区插件。先用示例仓库测试，不要直接安装到重要笔记仓库。
+
+启用后在设置中选择密钥；选中英文点击 Digest，或从命令面板执行 Note Digest: Digest 选中内容。可在 Obsidian 快捷键设置中给该命令分配快捷键。右侧“语境解释”会另发请求；写入按钮明确修改原文。当前仅支持普通单行段落写入，复杂 Markdown 请先在侧栏阅读。
 
 最低 Obsidian 版本见 manifest；使用系统 SecretStorage 选择 DeepSeek 密钥，插件只保存密钥名称。只有主动请求时才发送所选文本和必要上下文。
 

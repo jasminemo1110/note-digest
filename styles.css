@@ -1,0 +1,5 @@
+ .note-digest-panel { padding: 16px; }
+.note-digest-muted { color: var(--text-muted); font-size: var(--font-smallest); }
+.note-digest-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.note-digest-result, .note-digest-panel blockquote { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.note-digest-selection { position: fixed; z-index: 1000; box-shadow: var(--shadow-s); }
