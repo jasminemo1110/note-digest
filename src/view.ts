@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
-import type { DigestResult, SelectionSnapshot } from './core';
+import { ASSESSMENT_LABELS, type DigestResult, type SelectionSnapshot } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private plugin: NoteDigestPlugin) { super(leaf); }
@@ -22,6 +22,17 @@ export class DigestView extends ItemView {
     }
     if (status) el.createEl('p', { text: status, attr: { role: 'status', 'aria-live': 'polite' } });
     if (!result) return;
+    if (result.assessment) {
+      el.createEl('h3', { text: '音标' });
+      el.createEl('p', { text: result.pronunciation ?? '不适用或无法可靠确定', cls: 'note-digest-result' });
+      el.createEl('h3', { text: '表达判断 · ' + ASSESSMENT_LABELS[result.assessment.status] });
+      el.createEl('p', { text: result.assessment.explanation, cls: 'note-digest-result' });
+      if (result.assessment.correction) {
+        el.createEl('h3', { text: result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法' });
+        el.createEl('p', { text: result.assessment.correction, cls: 'note-digest-result' });
+      }
+      el.createEl('p', { text: '以上为 AI 结合当前语境的判断；建议改法不会自动修改原文。', cls: 'note-digest-muted' });
+    }
     for (const [key, label] of [['translation', '中文翻译'], ['meaning', '语境含义'], ['usage', '用法'], ['example', '例句']] as const) {
       if (result[key]) { el.createEl('h3', { text: label }); el.createEl('p', { text: result[key], cls: 'note-digest-result' }); }
     }

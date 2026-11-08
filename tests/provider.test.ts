@@ -33,3 +33,14 @@ test('transport errors do not expose secrets or source text', async () => {
 test('Japanese interface is reserved but not enabled', () => {
   assert.throws(() => languageInstruction('ja'), /第二版/);
 });
+
+test('explanation request asks for IPA and distinguishes errors from register; results stay structured', async () => {
+  const explanation = {translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null}};
+  const transport: Transport = async request => {
+    const prompt = JSON.parse(request.body as string).messages[0].content;
+    assert.match(prompt, /IPA/); assert.match(prompt, /informal/); assert.match(prompt, /uncertain/);
+    assert.match(prompt, /Do not silently replace/);
+    return {status:200, json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(explanation)}}]}};
+  };
+  assert.deepEqual(await digest(selected, 'explain', credential, transport), explanation);
+});

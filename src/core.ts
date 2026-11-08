@@ -3,8 +3,18 @@ export type Action = 'translate' | 'explain';
 export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string;
 }
+export const ASSESSMENT_LABELS = {
+  natural: '自然、规范', informal: '口语或非正式表达', unnatural: '可以理解，但不够自然',
+  incorrect: '用词或语法有误', uncertain: '语境不足，无法确定',
+} as const;
+export interface ExpressionAssessment {
+  status: keyof typeof ASSESSMENT_LABELS;
+  explanation: string;
+  correction: string | null;
+}
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
+  pronunciation?: string | null; assessment?: ExpressionAssessment;
 }
 export function snapshot(path: string, source: string, text: string, offset?: number): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
@@ -23,7 +33,24 @@ export function validateResult(value: unknown, action: Action): DigestResult {
     if (typeof field !== 'string' || !field.trim() || field.length > (key === 'translation' ? 24000 : 6000)) throw new Error('AI 返回字段缺失或过长，请重试。');
     result[key] = field.trim();
   }
-  return result as unknown as DigestResult;
+  const validated: DigestResult = { translation: result.translation, ...result };
+  if (action === 'explain') {
+    const input = value as Record<string, unknown>;
+    const pronunciation = input.pronunciation;
+    if (pronunciation !== null && (typeof pronunciation !== 'string' || !pronunciation.trim() || pronunciation.length > 500)) throw new Error('AI 音标字段异常。');
+    const assessment = input.assessment;
+    if (!assessment || typeof assessment !== 'object' || Array.isArray(assessment)) throw new Error('AI 表达判断字段异常。');
+    const {status, explanation, correction} = assessment as Record<string, unknown>;
+    if (typeof status !== 'string' || !Object.hasOwn(ASSESSMENT_LABELS, status) ||
+        typeof explanation !== 'string' || !explanation.trim() || explanation.length > 6000 ||
+        (correction !== null && (typeof correction !== 'string' || !correction.trim() || correction.length > 6000))) throw new Error('AI 表达判断字段异常。');
+    if ((status === 'incorrect' || status === 'unnatural') && correction === null) throw new Error('AI 未提供建议改法。');
+    if ((status === 'natural' || status === 'uncertain') && correction !== null) throw new Error('AI 表达判断与改法冲突。');
+    validated.pronunciation = typeof pronunciation === 'string' ? pronunciation.trim() : null;
+    validated.assessment = { status: status as ExpressionAssessment['status'], explanation: explanation.trim(),
+      correction: typeof correction === 'string' ? correction.trim() : null };
+  }
+  return validated;
 }
 export function escapeMarkdown(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/([\\`*_{}\[\]()#+.!|~=-])/g, '\\$1');
