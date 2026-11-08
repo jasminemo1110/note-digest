@@ -52,3 +52,9 @@ CollectionStore 通过串行队列统一保存 SecretStorage 名称、来源 reg
 CollectionStore 的 removeNotes 复用串行队列。先持久化 active=false 与 deletionPending=true，再逐目标经 Vault.process 删除，逐次更新 savedTo；全部完成才清除待删除状态。高亮只读取活动记录；侧栏额外展示留有笔记或删除待重试记录。文件写入成功但状态保存失败可通过已缺失的记录标记幂等恢复。
 
 新卡片含 record / record-end 标记；删除检查唯一且非嵌套的边界，并验证所属学习区域。无结束标记的历史卡片按各历史 formatter 完整匹配，无法确认时拒绝自动删除。保留收藏快照以便重试及重新收藏，不删除整个 Markdown 文件，也不删除相邻分组。
+
+## 0.2.4 已知插入回执
+
+译文插入仍通过 Vault.process 精确比较旧快照；回执包含来源路径、写入前后内容、插入位置及长度，并再次读取确认写入后未发生其他编辑。侧栏只对当前 render revision 的回执应用 rebaseSelectionAfterInsertion，更新来源和必要偏移，保留 text/context。不会泛化为忽略中文括号差异或接受任意文档变更。
+
+若插入落在整个英文选区内部，则选区不再连续，拒绝 rebase；单词末尾括号及选区后方段落译文均可延续操作。插入期间禁用当前控件，成功后重新渲染新快照；插入失败恢复原控件。相同译文的二次插入单独拒绝。

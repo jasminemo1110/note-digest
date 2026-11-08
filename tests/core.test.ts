@@ -59,3 +59,31 @@ test('malformed or contradictory language assessments are rejected', () => {
   }
   for (const pronunciation of [undefined, {}, '', 'x'.repeat(501)]) assert.throws(() => validateResult({...base, pronunciation, assessment:{status:'natural',explanation:'自然',correction:null}}, 'explain'));
 });
+
+test('confirmed inline insertion refreshes source without changing selected English or AI context',async()=>{
+  const {translationInsertion,rebaseSelectionAfterInsertion}=await import('../src/core');
+  const selected=snapshot('a.md','New ideas emerge slowly.','emerge');
+  const receipt=translationInsertion(selected.source,selected,'浮现','inline');
+  const updated=rebaseSelectionAfterInsertion(selected,receipt)!;
+  assert.equal(updated.source,'New ideas emerge（浮现） slowly.');
+  assert.equal(updated.text,selected.text);assert.equal(updated.context,selected.context);
+  assert.equal(updated.source.slice(updated.start,updated.end),'emerge');
+  assert.throws(()=>insertTranslation(updated.source,updated,'浮现','inline'),/已包含/);
+});
+test('confirmed below insertion preserves selection; manual or unrelated changes cannot rebase it',async()=>{
+  const {translationInsertion,rebaseSelectionAfterInsertion}=await import('../src/core');
+  const selected=snapshot('a.md','New ideas emerge slowly.','emerge');
+  const receipt=translationInsertion(selected.source,selected,'浮现','below');
+  const updated=rebaseSelectionAfterInsertion(selected,receipt)!;
+  assert.equal(updated.context,selected.context);assert.equal(updated.start,selected.start);
+  assert.throws(()=>insertTranslation(updated.source,updated,'浮现','below'),/已包含/);
+  assert.equal(rebaseSelectionAfterInsertion(selected,{...receipt,after:receipt.after+'manual edit'}),null);
+  assert.equal(rebaseSelectionAfterInsertion(selected,{...receipt,path:'other.md'}),null);
+  assert.throws(()=>insertTranslation(updated.source+'manual edit',updated,'另一译文','inline'),/原文已修改/);
+});
+test('insertion receipts do not pretend a multi-paragraph selection remains contiguous',async()=>{
+  const {translationInsertion,rebaseSelectionAfterInsertion}=await import('../src/core');
+  const source='First paragraph.\n\nSecond paragraph.';const selected=snapshot('a.md',source,source);
+  const part=snapshot('a.md',source,'First paragraph.');const receipt=translationInsertion(source,part,'第一段','below');
+  assert.equal(rebaseSelectionAfterInsertion(selected,receipt),null);
+});

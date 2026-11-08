@@ -4,15 +4,17 @@ import type { Kind, SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
-import { ASSESSMENT_LABELS, type Action, type DigestResult, type SelectionSnapshot } from './core';
+import { ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type SelectionSnapshot } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
+  private renderRevision = 0;
   constructor(leaf: WorkspaceLeaf, private plugin: NoteDigestPlugin) { super(leaf); }
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return 'Note Digest'; }
   getIcon(): string { return 'book-open-text'; }
   async onOpen(): Promise<void> { this.render(); }
   render(selection?: SelectionSnapshot, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
+    const revision = ++this.renderRevision;
     const el = this.contentEl; el.empty(); el.addClass('note-digest-panel');
     el.createEl('h2', { text: 'Note Digest' });
     if (!selection) {
@@ -45,7 +47,11 @@ export class DigestView extends ItemView {
         const pair = el.createDiv({cls:'note-digest-paragraph'});
         pair.createEl('p',{text:paragraph.source,cls:'note-digest-original'});
         pair.createEl('p',{text:paragraph.translation,cls:'note-digest-result'});
-        this.renderInsertButtons(pair,{...selection,text:paragraph.source,start:paragraph.start,end:paragraph.end},paragraph.translation);
+        this.renderInsertButtons(pair,{...selection,text:paragraph.source,start:paragraph.start,end:paragraph.end},paragraph.translation,revision,receipt=>{
+          const updated=rebaseSelectionAfterInsertion(selection,receipt);
+          if(updated) this.render(updated,result,'译文已添加，可以直接继续语境解释。',mode);
+          else this.render(selection,result,'译文已添加；此多段选区包含新插入内容，请重新选择后继续。',mode);
+        });
       }
     } else {
       el.createEl('h3',{text:selection.text,cls:'note-digest-original'});
@@ -68,11 +74,20 @@ export class DigestView extends ItemView {
     this.renderSave(selection,result,mode);
     this.renderCollection(selection.path);
   }
-  private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string): void {
+  private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string, revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
     const writes=parent.createDiv({cls:'note-digest-actions note-digest-insert'});
     for (const [label,mode] of [['添加到原文下方','below'],['添加到句后括号','inline']] as const) {
       const button=writes.createEl('button',{text:label});
-      button.onclick=()=>{void this.plugin.insert(selection,translation,mode);};
+      button.onclick=async()=>{
+        const controls=Array.from(this.contentEl.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select'));
+        const previous=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);
+        try {
+          const receipt=await this.plugin.insert(selection,translation,mode);
+          if(receipt && revision===this.renderRevision) onInserted(receipt);
+        } finally {
+          if(revision===this.renderRevision) controls.forEach((control,index)=>control.disabled=previous[index]);
+        }
+      };
     }
   }
   private renderSave(selection: SelectionSnapshot, result: DigestResult, mode: Action): void {

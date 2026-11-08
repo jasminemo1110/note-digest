@@ -1,5 +1,5 @@
 import { MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
-import { snapshot, insertTranslation, type SelectionSnapshot, type Action } from './core';
+import { snapshot, translationInsertion, type InsertionReceipt, type SelectionSnapshot, type Action } from './core';
 import { digest, translateParagraphs } from './provider';
 import { isLongSelection } from './reading-layout';
 import { DigestSettings } from './settings';
@@ -197,15 +197,22 @@ export default class NoteDigestPlugin extends Plugin {
       if (generation === this.generation) panel.render(selection, undefined, error instanceof Error ? error.message : '请求失败。', action);
     }
   }
-  async insert(selection: SelectionSnapshot, translation: string, mode: 'below' | 'inline'): Promise<void> {
+  async insert(selection: SelectionSnapshot, translation: string, mode: 'below' | 'inline'): Promise<InsertionReceipt | undefined> {
     try {
       const file = this.app.vault.getAbstractFileByPath(selection.path);
       if (!(file instanceof TFile)) throw new Error('原文已移动或删除，请重新选择。');
       const openViews = this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view)
         .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === selection.path && view.getMode() === 'source');
       if (openViews.some(view => view.editor.getValue() !== selection.source)) throw new Error('编辑器中的原文已改变，请重新选择。');
-      await this.app.vault.process(file, current => insertTranslation(current, selection, translation, mode));
+      let receipt: InsertionReceipt | undefined;
+      await this.app.vault.process(file, current => {
+        receipt = translationInsertion(current, selection, translation, mode);
+        return receipt.after;
+      });
+      if (!receipt || await this.app.vault.read(file) !== receipt.after) throw new Error('插入后原文又有变化，请重新选择。');
+      this.generation++;
       new Notice('译文已添加到原文。');
+      return receipt;
     } catch (error) { new Notice(error instanceof Error ? error.message : '写入失败。'); }
   }
 }

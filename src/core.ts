@@ -83,7 +83,30 @@ export function insertTranslation(current: string, selection: SelectionSnapshot,
   const safe = escapeMarkdown(translation.trim());
   if (mode === 'inline') {
     if (/\r|\n/.test(translation)) throw new Error('多行译文请使用下方插入。');
+    if (current.slice(selection.end).startsWith('（' + safe + '）')) throw new Error('原文已包含这段括号译文。');
     return current.slice(0, selection.end) + '（' + safe + '）' + current.slice(selection.end);
   }
+  const tail = current.slice(lineEnd);
+  if (tail.startsWith('\n\n' + safe) && (!tail[2 + safe.length] || /[\r\n]/.test(tail[2 + safe.length]))) throw new Error('原文下方已包含这段译文。');
   return current.slice(0, lineEnd) + '\n\n' + safe + current.slice(lineEnd);
+}
+
+export interface InsertionReceipt { path: string; before: string; after: string; offset: number; length: number }
+/** A receipt describes only the exact insertion that passed the atomic source check. */
+export function translationInsertion(current: string, selection: SelectionSnapshot, translation: string, mode: 'below'|'inline'): InsertionReceipt {
+  const after = insertTranslation(current,selection,translation,mode);
+  const newline = current.indexOf('\n',selection.end);
+  return {path:selection.path,before:current,after,offset:mode==='inline'?selection.end:newline<0?current.length:newline,length:after.length-current.length};
+}
+/** Keep English and AI context immutable; update only the confirmed source and offsets. */
+export function rebaseSelectionAfterInsertion(selection: SelectionSnapshot, receipt: InsertionReceipt): SelectionSnapshot | null {
+  if (receipt.path!==selection.path || receipt.before!==selection.source || receipt.length<=0 ||
+      receipt.after.length!==receipt.before.length+receipt.length ||
+      receipt.after.slice(0,receipt.offset)!==receipt.before.slice(0,receipt.offset) ||
+      receipt.after.slice(receipt.offset+receipt.length)!==receipt.before.slice(receipt.offset)) return null;
+  if (receipt.offset>selection.start && receipt.offset<selection.end) return null;
+  const shift=receipt.offset<=selection.start?receipt.length:0;
+  const start=selection.start+shift,end=selection.end+shift;
+  if (receipt.after.slice(start,end)!==selection.text) return null;
+  return {...selection,source:receipt.after,start,end};
 }

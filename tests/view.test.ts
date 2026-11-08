@@ -65,3 +65,38 @@ test('inactive retained card exposes independent delete button and invokes only 
   await erase.onclick!(new (domEvent(document))('click') as any);
   assert.deepEqual(calls[0],['removeNotes','saved-word']);assert.ok(document.body.textContent!.includes('已删除'));
 });
+
+test('insert then explain uses updated source and original English context without another Digest',async()=>{
+  const {translationInsertion}=await import('../src/core');
+  const {view,document,calls,plugin}=setup();
+  (plugin as any).insert=async(selection:any,translation:string,mode:any)=>translationInsertion(selection.source,selection,translation,mode);
+  view.render(selected,{translation:'有说服力的'});
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  await insert.onclick!(new (domEvent(document))('click') as any);
+  const explain=[...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!;
+  explain.click();
+  assert.equal(calls[0][0],'run');assert.equal(calls[0][2],'explain');
+  assert.equal(calls[0][1].source,'A compelling（有说服力的） argument.');
+  assert.equal(calls[0][1].text,'compelling');assert.equal(calls[0][1].context,selected.context);
+});
+test('failed insertion leaves original selection usable and restores controls',async()=>{
+  const {view,document,calls,plugin}=setup();(plugin as any).insert=async()=>undefined;
+  view.render(selected,{translation:'有说服力的'});
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  await insert.onclick!(new (domEvent(document))('click') as any);
+  const explain=[...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!;
+  assert.equal(explain.disabled,false);explain.click();assert.equal(calls[0][1].source,selected.source);
+});
+test('late insertion response cannot replace a newer selected word in the sidebar',async()=>{
+  const {translationInsertion}=await import('../src/core');
+  const {view,document,calls,plugin}=setup();let finish:(value:any)=>void=()=>{};
+  (plugin as any).insert=()=>new Promise(resolve=>{finish=resolve;});
+  view.render(selected,{translation:'有说服力的'});
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  const pending=insert.onclick!(new (domEvent(document))('click') as any);
+  assert.equal([...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!.disabled,true);
+  const next=snapshot('b.md','A different idea.','idea');view.render(next,{translation:'想法'});
+  finish(translationInsertion(selected.source,selected,'有说服力的','inline'));await pending;
+  [...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!.click();
+  assert.equal(calls[0][1].path,'b.md');assert.equal(calls[0][1].text,'idea');
+});
