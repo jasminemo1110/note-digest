@@ -17,6 +17,7 @@
 - src/collection.ts：版本化收藏数据、同语境去重、串行事务、逐目标幂等追加；视图不得自行覆盖文件。
 - src/vault-storage.ts：Vault.process、独占创建、未同步编辑保护。
 - src/anchors.ts：排除生成学习区、段落锚点及阅读选区定位。
+- src/reading-layout.ts：长选区判断、本地段落范围、结果展示规则。
 - src/reading-actions.ts：展示用精简语境和阅读快捷键保护；不改变 AI 分析上下文。
 - src/highlights.ts：原文范围核对和 DOM 高亮；不修改源 Markdown。
 - 设置与收藏共用 CollectionStore 持久化队列，禁止 saveData 只写设置而覆盖收藏。

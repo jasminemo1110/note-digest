@@ -25,7 +25,7 @@ test('both targets retain full explanation, source body and saved identity', asy
   assert.ok(saved.targets.every(t=>t.ok)); assert.equal(f.store.recordsFor(path).length,1);
   for(const t of saved.targets) {
     const text=f.files.get(t.path)!;
-    for(const field of ['音标','语境含义','用法','例句','表达判断','另一个搭配']) assert.ok(text.includes(field));
+    for(const field of ['音标','语境含义','用法','例句','另一个搭配']) assert.ok(text.includes(field));
   }
   assert.equal(articleBody(f.files.get(path)!),source);
   assert.equal(locateAnchor(f.files.get(path)!,saved.record.anchor),source.indexOf('compelling'));
@@ -140,9 +140,28 @@ test('legacy cleanup changes only exact generated cards and is repeatable',async
   const old=`\n\n<!-- note-digest:record:${rec.id} -->\n### 金句：A compelling argument\\.\n\n[返回原文](/Articles/Learning.md) · ${rec.createdAt.slice(0,10)}\n\n> A compelling argument\\.\n\n**中文翻译**\n\n> 有说服力的论点\n`;
   const before='原文不动'+old+'\n手工备注';
   const compact=compactLegacyCards(before,[rec],doc);
-  assert.equal(compact.count,1);assert.equal(compact.text,'原文不动'+recordMarkdown(rec,doc)+'\n手工备注');
+  assert.equal(compact.count,1);assert.ok(compact.text.startsWith('原文不动'));assert.ok(compact.text.includes('手工备注'));assert.ok(compact.text.includes('### 金句'));assert.ok(compact.text.includes(recordMarkdown(rec,doc)));
   assert.equal(compactLegacyCards(compact.text,[rec],doc).count,0);
   const edited=before.replace('有说服力的论点','用户修改的译文');
   assert.deepEqual(compactLegacyCards(edited,[rec],doc),{text:edited,count:0});
   f.files.set(path,before);await f.store.compact(path);assert.equal(f.files.get(path),compact.text);
+});
+
+test('natural usage omits advice, errors preserve correction; words and quotes have distinct groups',async()=>{
+  const f=fixture();const word=await f.store.save(select(),result,'word','both');
+  const card=recordMarkdown(word.record,f.durable().documents[0]);assert.ok(!card.includes('表达判断'));
+  await f.store.save(snapshot(path,source,'A compelling argument.'),{translation:'有说服力的论点'},'quote','both');
+  for(const target of word.targets){
+    const text=f.files.get(target.path)!;assert.ok(text.includes('### 单词'));assert.ok(text.includes('### 金句'));
+    const wordStart=text.indexOf('<!-- note-digest:group:word -->');const wordEnd=text.indexOf('<!-- note-digest:end:word -->');
+    assert.ok(text.indexOf('#### 词语')>wordStart && text.indexOf('#### 词语')<wordEnd);
+    assert.ok(text.indexOf('#### 金句')>wordEnd);
+  }
+});
+test('group insertion preserves edited entries and refuses broken group boundaries',async()=>{
+  const f=fixture();await f.store.save(select(),result,'word','source');
+  const current=f.files.get(path)!;f.files.set(path,current.replace('<!-- note-digest:end:word -->','手工破坏的标记'));
+  const second=snapshot(path,f.files.get(path)!,'compelling',source.lastIndexOf('compelling'));
+  const before=f.files.get(path);const report=await f.store.save(second,result,'word','source');
+  assert.equal(report.targets[0].ok,false);assert.equal(f.files.get(path),before);
 });

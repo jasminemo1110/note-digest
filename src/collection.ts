@@ -1,4 +1,5 @@
 import { ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
+import { showAssessment } from './reading-layout';
 import { shortContext } from './reading-actions';
 import { articleBody, LEARNING_BOUNDARY, makeAnchor, type Anchor } from './anchors';
 
@@ -73,7 +74,7 @@ function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): stri
   }
   return text + '\n';
 }
-export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   const result = record.result;
   let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
@@ -90,19 +91,49 @@ export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): st
   }
   return text + '\n';
 }
-/** Only replace byte-identical generated cards. User edits and neighboring content survive. */
+export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+  const result = record.result;
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
+  if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
+  text += `\n\n${quoted(result.translation)}`;
+  if (record.kind === 'word') {
+    text += `\n\n**原始语境**\n\n${quoted(shortContext(record.anchor))}`;
+    for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
+      if (value) text += `\n\n**${label}**\n\n${quoted(value)}`;
+    }
+    if (result.assessment && showAssessment(result.assessment)) {
+      text += `\n\n**表达判断（AI 建议）：${ASSESSMENT_LABELS[result.assessment.status]}**\n\n${quoted(result.assessment.explanation)}`;
+      if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
+    }
+  }
+  return text + '\n';
+}
+function groupTokens(kind: Kind) {
+  return {start: `<!-- note-digest:group:${kind} -->`, end: `<!-- note-digest:end:${kind} -->`};
+}
+function appendGrouped(current: string, record: LearningRecord, doc: SourceDocument): string {
+  const {start, end} = groupTokens(record.kind);
+  const startIndex = current.indexOf(start); const endIndex = current.indexOf(end);
+  if (startIndex < 0 && endIndex < 0) {
+    return current + `\n\n${start}\n### ${record.kind === 'word' ? '单词' : '金句'}\n` + recordMarkdown(record, doc) + `\n${end}\n`;
+  }
+  if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
+  return current.slice(0, endIndex) + recordMarkdown(record, doc) + '\n' + current.slice(endIndex);
+}
+/** Explicit migration moves only byte-identical generated cards into typed groups. */
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
   let text = current; let count = 0;
   for (const record of records) {
-    const legacy = legacyRecordMarkdown(record, doc);
-    if (text.includes(legacy)) { text = text.replace(legacy, recordMarkdown(record, doc)); count++; }
+    const candidates = [legacyRecordMarkdown(record, doc), previousRecordMarkdown(record, doc)];
+    const old = candidates.find(candidate => text.includes(candidate));
+    if (old) { text = appendGrouped(text.replace(old, ''), record, doc); count++; }
   }
   return {text, count};
 }
 export function appendRecord(current: string, record: LearningRecord, doc: SourceDocument, isSource: boolean): string {
   if (current.includes(`<!-- note-digest:record:${record.id} -->`)) return current;
   if (isSource && !current.includes(LEARNING_BOUNDARY)) current += LEARNING_BOUNDARY + '## Note Digest 学习笔记\n';
-  return current + recordMarkdown(record, doc);
+  return appendGrouped(current, record, doc);
 }
 
 /** Serializes collection metadata and writes, including settings and rename events. */

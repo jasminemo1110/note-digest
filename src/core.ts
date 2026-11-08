@@ -1,6 +1,6 @@
 import { articleBody } from './anchors';
 export type SourceLanguage = 'en' | 'ja';
-export type Action = 'translate' | 'explain';
+export type Action = 'translate' | 'explain' | 'summarize';
 export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string;
 }
@@ -16,6 +16,7 @@ export interface ExpressionAssessment {
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
   pronunciation?: string | null; assessment?: ExpressionAssessment;
+  summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
 }
 export function snapshot(path: string, source: string, text: string, offset?: number): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
@@ -28,6 +29,11 @@ export function snapshot(path: string, source: string, text: string, offset?: nu
 }
 export function validateResult(value: unknown, action: Action): DigestResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('AI 返回格式异常，请重试。');
+  if (action === 'summarize') {
+    const summary = (value as Record<string, unknown>).summary;
+    if (typeof summary !== 'string' || !summary.trim() || summary.length > 6000) throw new Error('AI 摘要字段异常。');
+    return {translation: '', summary: summary.trim()};
+  }
   const fields = action === 'explain' ? ['translation', 'meaning', 'usage', 'example'] as const : ['translation'] as const;
   const result: Record<string, string> = {};
   for (const key of fields) {

@@ -1,6 +1,7 @@
 import { MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
 import { snapshot, insertTranslation, type SelectionSnapshot, type Action } from './core';
-import { digest } from './provider';
+import { digest, translateParagraphs } from './provider';
+import { isLongSelection } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
 import { CollectionStore, loadCollection, type Kind, type SaveTarget } from './collection';
@@ -27,7 +28,7 @@ export default class NoteDigestPlugin extends Plugin {
     this.addRibbonIcon('book-open-text', '打开 Note Digest', () => { void this.openPanel(); });
     this.addCommand({ id: 'open-learning-panel', name: '打开学习侧栏', callback: () => { void this.openPanel(); } });
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
-    this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到原文末尾', callback: () => { void this.capture('quote'); } });
+    this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
     this.registerDomEvent(document, 'keydown', event => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
@@ -152,10 +153,15 @@ export default class NoteDigestPlugin extends Plugin {
           ? renderedSelectionOffset(source, section.lineStart, section.lineEnd, paragraph.textContent ?? '', localOffset, text) : undefined;
         selected = snapshot(path, source, text, offset);
       }
+      if (action === 'digest' && isLongSelection(selected.text)) {
+        const generation = ++this.generation; const panel = await this.openPanel();
+        if (generation === this.generation && !this.stopped) panel.render(selected,undefined,'','idle');
+        return;
+      }
       const requestGeneration = this.generation + 1;
       const result = await this.run(selected, 'translate');
       if (action === 'quote' && result && requestGeneration === this.generation && !this.stopped) {
-        const status = await this.collect(selected, result, 'quote', 'source');
+        const status = await this.collect(selected, result, 'quote', 'both');
         new Notice(status);
         if (requestGeneration === this.generation && !this.stopped) (await this.openPanel()).render(selected, result, status);
       }
@@ -166,20 +172,23 @@ export default class NoteDigestPlugin extends Plugin {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
-    panel.render(selection, undefined, '正在请求…');
+    panel.render(selection, undefined, '正在请求…', action);
     try {
       const file = this.app.vault.getAbstractFileByPath(selection.path);
       if (!(file instanceof TFile) || await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      const result = await digest(selection, action, key ?? '', requestUrl);
+      const result = action === 'translate' && isLongSelection(selection.text)
+        ? await translateParagraphs(selection,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,
+          (done,total)=>{ if(generation===this.generation) panel.render(selection,undefined,`正在翻译 ${done}/${total} 段…`,action); })
+        : await digest(selection, action, key ?? '', requestUrl);
       if (generation !== this.generation) return;
       if (await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
-      panel.render(selection, result);
+      panel.render(selection, result, '', action);
       return result;
     } catch (error) {
-      if (generation === this.generation) panel.render(selection, undefined, error instanceof Error ? error.message : '请求失败。');
+      if (generation === this.generation) panel.render(selection, undefined, error instanceof Error ? error.message : '请求失败。', action);
     }
   }
   async insert(selection: SelectionSnapshot, translation: string, mode: 'below' | 'inline'): Promise<void> {
