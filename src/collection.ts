@@ -1,7 +1,7 @@
 import { canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
 import { showAssessment } from './reading-layout';
 import { shortContext } from './reading-actions';
-import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, type Anchor } from './anchors';
+import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
@@ -49,6 +49,8 @@ export function loadCollection(input: unknown): CollectionData {
         typeof record.anchor.text !== 'string' || !record.anchor.text.trim() || record.anchor.text.length > 12000 ||
         !Number.isInteger(record.anchor.offset) || record.anchor.offset < 0 ||
         record.anchor.block.slice(record.anchor.offset, record.anchor.offset + record.anchor.text.length) !== record.anchor.text ||
+        (record.anchor.location !== undefined && (!record.anchor.location || !Number.isSafeInteger(record.anchor.location.start) ||
+          record.anchor.location.start < record.anchor.offset || !/^[0-9a-f]{64}$/.test(record.anchor.location.digest))) ||
         typeof record.context !== 'string' || record.context.length > 14400) throw new Error('收藏条目数据损坏。');
     recordIds.add(record.id);
     record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
@@ -260,7 +262,9 @@ export class CollectionStore {
       const current = await this.port.read(selection.path);
       if (current === null || articleBody(current) !== articleBody(selection.source)) throw new Error('原文已修改或移动，请重新选择后收藏。');
       const result = validateResult(input, kind === 'word' ? 'explain' : 'translate');
-      const anchor = makeAnchor(selection.source, selection.start, selection.text);
+      const body = articleBody(selection.source);
+      const range = normalizeCollectionRange(body, selection.start, selection.text, kind);
+      const anchor = makeAnchor(body, range.offset, range.text);
       const next = structuredClone(this.data);
       let doc = next.documents.find(doc => doc.path === selection.path);
       if (!doc) {
@@ -268,9 +272,23 @@ export class CollectionStore {
         const name = selection.path.split('/').pop()!.replace(/\.md$/, '').replace(/[<>:"/\\|?*\[\]#^]/g, '-').slice(0, 48);
         doc = {id, path: selection.path, notePath: `Digest/文章学习/${name}--${id}.md`}; next.documents.push(doc);
       }
-      let record = next.records.find(record => record.documentId === doc!.id && record.kind === kind && record.anchor.text === anchor.text &&
-        ((record.anchor.block === anchor.block && record.anchor.offset === anchor.offset) ||
-          locateAnchor(selection.source, record.anchor) === selection.start));
+      // Identical paragraphs need an exact source snapshot to disambiguate their offsets.
+      if (locateAnchor(body, anchor) === null) {
+        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
+        const digest = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+        anchor.location = {start: range.offset, digest};
+      }
+      const matches = next.records.filter(record => {
+        if (record.documentId !== doc.id || record.kind !== kind) return false;
+        const previous = record.anchor;
+        const position = anchor.location && previous.location?.digest === anchor.location.digest
+          ? previous.location.start : locateAnchor(body, previous);
+        if (position === null) return false;
+        const normalized = normalizeCollectionRange(body, position, previous.text, kind);
+        return normalized.offset === range.offset && normalized.text === range.text;
+      });
+      let record = matches.find(record => record.active && record.savedTo.length) ??
+        matches.find(record => record.savedTo.length) ?? matches[0];
       if (!record) {
         record = {id: this.uuid(), documentId: doc.id, kind, anchor, context: selection.context,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
@@ -294,7 +312,7 @@ export class CollectionStore {
           });
           if (!record.savedTo.includes(path)) record.savedTo.push(path);
           try { await this.commit(next); } catch { throw new Error('内容已写入，但收藏状态保存失败；请重试以恢复高亮。'); }
-          targets.push({path, ok: true, message: existed ? '已存在，保留手工修改' : '已保存'});
+          targets.push({path, ok: true, message: existed ? '已收藏' : '已保存'});
         } catch (error) {
           targets.push({path, ok: false, message: error instanceof Error ? error.message : '保存失败，请重试'});
         }

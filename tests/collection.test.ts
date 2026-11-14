@@ -74,6 +74,52 @@ test('different contexts and different kinds remain separate', async()=>{
   await f.store.save(snapshot(path,source,'A compelling argument.'),result,'quote','note');
   assert.equal(f.store.recordsFor(path).length,3);
 });
+
+test('accidental whitespace, punctuation and partial neighboring words reuse the saved card', async () => {
+  const f = fixture();
+  const body = 'The Supply, “Stranglehold,” Loosens.\n\nA Stranglehold remains.';
+  f.files.set(path, body);
+  const saved = await f.store.save(snapshot(path, body, 'Stranglehold', body.indexOf('Stranglehold')), result, 'word', 'both');
+  const before = new Map(f.files);
+  for (const text of ['Stranglehold,', ' “Stranglehold,” ', 'ly, “Stranglehold,” Lo']) {
+    const again = await f.store.save(snapshot(path, body, text), {...result, translation:'新译文'}, 'word', 'both');
+    assert.equal(again.record.id, saved.record.id);
+    assert.deepEqual(again.targets.map(target => target.message), ['已收藏', '已收藏']);
+    assert.deepEqual(f.files, before);
+  }
+  const phrase = await f.store.save(snapshot(path, body, 'Supply, “Stranglehold'), result, 'word', 'note');
+  assert.notEqual(phrase.record.id, saved.record.id);
+  assert.equal(phrase.record.anchor.text, 'Supply, “Stranglehold');
+  const second = await f.store.save(snapshot(path, body, 'Stranglehold', body.lastIndexOf('Stranglehold')), result, 'word', 'note');
+  assert.notEqual(second.record.id, saved.record.id);
+});
+
+test('new cards omit accidental edges and match legacy anchors without rewriting them', async () => {
+  const f = fixture();
+  const first = await f.store.save(snapshot(path, source, ' compelling ar'), result, 'word', 'note');
+  assert.equal(first.record.anchor.text, 'compelling');
+  const data = f.durable();
+  const legacy = data.records[0].anchor;
+  legacy.text = 'compelling ';
+  const reopened = new CollectionStore(loadCollection(data), f.port);
+  const again = await reopened.save(select(), result, 'word', 'note');
+  assert.equal(again.record.id, first.record.id);
+  assert.equal(again.record.anchor.text, 'compelling ');
+  assert.equal(again.targets[0].message, '已收藏');
+});
+
+test('new collections distinguish identical paragraphs using confirmed source positions after reload', async () => {
+  const f = fixture();
+  const body = 'A compelling argument.\n\nA compelling argument.';
+  f.files.set(path, body);
+  const first = await f.store.save(snapshot(path, body, 'compelling', body.indexOf('compelling')), result, 'word', 'note');
+  const second = await f.store.save(snapshot(path, body, 'compelling', body.lastIndexOf('compelling')), result, 'word', 'note');
+  assert.notEqual(second.record.id, first.record.id);
+  const reopened = new CollectionStore(loadCollection(f.durable()), f.port);
+  const again = await reopened.save(snapshot(path, body, 'compelling ar', body.lastIndexOf('compelling')), result, 'word', 'note');
+  assert.equal(again.record.id, second.record.id);
+  assert.equal(again.targets[0].message, '已收藏');
+});
 test('partial failure can retry after reload without duplicating successful target',async()=>{
   const f=fixture();f.fail('Digest/');
   const first=await f.store.save(select(),result,'word','both');

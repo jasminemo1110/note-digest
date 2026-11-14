@@ -14,7 +14,37 @@ export function paragraphRanges(text: string): { start: number; end: number }[] 
   ranges.push({start, end: text.length});
   return ranges;
 }
-export interface Anchor { block: string; offset: number; text: string }
+export interface Anchor { block: string; offset: number; text: string; location?: { start: number; digest: string } }
+
+export function normalizeCollectionRange(source: string, offset: number, text: string, kind: 'word' | 'quote') {
+  const edges = kind === 'word' ? /[\s.,!?;:()[\]{}"'“”‘’，。！？；：（）【】—–]/u : /\s/u;
+  let start = offset;
+  let end = offset + text.length;
+  while (start < end && edges.test(source[start])) start++;
+  while (end > start && edges.test(source[end - 1])) end--;
+  if (kind === 'word' && start < end) {
+    const word = /[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*/gu;
+    const words: {start: number; end: number}[] = [];
+    word.lastIndex = start;
+    while (word.lastIndex > 0 && !/[\s()[\]{}]/u.test(source[word.lastIndex - 1])) word.lastIndex--;
+    for (const match of source.matchAll(word)) {
+      if (match.index >= end) break;
+      const wordEnd = match.index + match[0].length;
+      if (wordEnd > start) words.push({start: match.index, end: wordEnd});
+    }
+    const hasCompleteWord = words.some(word => word.start >= start && word.end <= end);
+    if (hasCompleteWord) {
+      const first = words[0];
+      const last = words.at(-1)!;
+      if (first.start < start && /^[\p{L}]{1,2}$/u.test(source.slice(start, first.end))) start = first.end;
+      if (last.end > end && /^[\p{L}]{1,2}$/u.test(source.slice(last.start, end))) end = last.start;
+      while (start < end && edges.test(source[start])) start++;
+      while (end > start && edges.test(source[end - 1])) end--;
+    }
+  }
+  return start === end ? {offset, text} : {offset: start, text: source.slice(start, end)};
+}
+
 export function makeAnchor(source: string, start: number, text: string): Anchor {
   const body = articleBody(source);
   if (start < 0 || body.slice(start, start + text.length) !== text) throw new Error('请选择原文章中的内容，不要收藏生成的学习区。');
