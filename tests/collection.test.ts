@@ -326,3 +326,55 @@ test('explicit card cleanup removes the old word prefix only from an exact gener
   const edited=legacy.replace('有说服力的','手动补充');
   assert.deepEqual(compactLegacyCards(edited,[saved.record],doc),{text:edited,count:0});
 });
+
+test('explicit explanation update preserves manual paragraphs inside and outside both copies', async () => {
+  const f = fixture();
+  const saved = await f.store.save(select(),result,'word','both');
+  const paths = saved.targets.map(target => target.path);
+  for (const path of paths) {
+    const text = f.files.get(path)!;
+    f.files.set(path,text.replace('**语境含义**','我的卡内备注\n\n**语境含义**') + '\n我的卡外备注');
+  }
+  const edited = {...result, translation:'新版译文', meaning:'新版含义', example:'新版例句'};
+  const before = new Map(f.files);
+  const duplicate = await f.store.save(select(),edited,'word','both');
+  assert.equal(duplicate.record.result.translation,result.translation);
+  assert.deepEqual(f.files,before);
+  assert.equal(await f.store.updateExplanation(select(),saved.record.id,edited),'已更新单词卡');
+  for (const path of paths) {
+    const text = f.files.get(path)!;
+    assert.match(text,/> 新版译文/);
+    assert.match(text,/我的卡内备注\n\n\*\*语境含义\*\*\n\n> 新版含义/);
+    assert.match(text,/我的卡外备注$/);
+    assert.equal(text.split(`<!-- note-digest:record:${saved.record.id} -->`).length,2);
+  }
+  assert.equal(articleBody(f.files.get(path)!),source);
+  assert.deepEqual(f.store.recordsFor(path)[0].result,edited);
+});
+
+test('a manually edited generated field protects both copies before an update starts', async () => {
+  const f = fixture();
+  const saved = await f.store.save(select(),result,'word','both');
+  const note = saved.targets[1].path;
+  f.files.set(note,f.files.get(note)!.replace('> 有说服力的','> 自己改过的译文'));
+  const before = new Map(f.files);
+  await assert.rejects(f.store.updateExplanation(select(),saved.record.id,{...result, translation:'新版译文'}),/手工修改/);
+  assert.deepEqual(f.files,before);
+  assert.equal(f.durable().records[0].pendingExplanation,undefined);
+});
+
+test('partial card update resumes the original explanation after reopening', async () => {
+  const f = fixture();
+  const saved = await f.store.save(select(),result,'word','both');
+  f.fail('Digest/');
+  assert.match(await f.store.updateExplanation(select(),saved.record.id,{...result,translation:'这次的译文'}),/尚未完成/);
+  const sourceAfter = f.files.get(path);
+  assert.match(sourceAfter!,/这次的译文/);
+  f.fail('');
+  const reopened = new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.equal(await reopened.updateExplanation(select(),saved.record.id,{...result,translation:'另一份解释'}),'已完成上次更新');
+  assert.equal(f.files.get(path),sourceAfter);
+  assert.match(f.files.get(saved.targets[1].path)!,/这次的译文/);
+  assert.equal(f.durable().records[0].pendingExplanation,undefined);
+  assert.equal(f.durable().records[0].result.translation,'这次的译文');
+});

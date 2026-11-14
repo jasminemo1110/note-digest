@@ -22,7 +22,7 @@ function setup() {
   class ItemView {contentEl=document.createElement('div');app=app;constructor(){document.body.append(this.contentEl);}}
   const module={exports:{} as any};
   new Function('require','module','exports',bundled.outputFiles[0].text)(()=>({ItemView}),module,module.exports);
-  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return {text:'已保存',duplicate:false};},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
+  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined,matchingWords:async():Promise<any[]>=>[],updateExplanation:async(...args:any[])=>{calls.push(["update",...args]);return "已更新单词卡";}},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return {text:'已保存',duplicate:false};},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
     summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
   return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
@@ -139,4 +139,21 @@ test('duplicate saving shows one prominent message without paths', async () => {
   const message=section.querySelector('[role="status"]')!;
   assert.equal(message.textContent,'本词已收藏');
   assert.ok(message.classList.contains('note-digest-save-duplicate'));
+});
+
+
+test('an explanation updates a matched card only when the update control is clicked', async () => {
+  const {view,document,plugin,calls}=setup();
+  plugin.collection.matchingWords=async()=>[{id:'old-card',anchor:{text:'compelling'},result:{translation:'旧译文'}}];
+  view.render(selected,explained);
+  await Promise.resolve();
+  const buttons=[...document.querySelectorAll('button')];
+  const save=buttons.find(button=>button.textContent==='保存')!;
+  const update=buttons.find(button=>button.textContent==='用本次解释更新')!;
+  const event=new (domEvent(document))('click') as any;
+  await save.onclick!(event);
+  assert.deepEqual(calls.map(call=>call[0]),['collect']);
+  await update.onclick!(event);
+  assert.deepEqual(calls.at(-1),['update',selected,'old-card',explained]);
+  assert.equal(document.querySelector('.note-digest-save [role="status"]')?.textContent,'已更新单词卡');
 });

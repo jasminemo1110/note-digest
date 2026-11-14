@@ -157,6 +157,7 @@ export class DigestView extends ItemView {
     }
     const save=el.createEl('button',{text:'保存',cls:'mod-cta'});
     const message=el.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+    let refreshUpdate = () => {};
     save.onclick=async()=>{
       save.disabled=true;message.textContent='正在保存…';
       message.classList.remove('note-digest-save-duplicate');
@@ -166,8 +167,60 @@ export class DigestView extends ItemView {
         message.textContent = feedback.text;
       }
       catch(error) { message.textContent=error instanceof Error ? error.message : '保存失败，请重试。'; }
-      finally { save.disabled=false;if(message.isConnected)this.renderCollection(selection.path); }
+      finally {
+        save.disabled=false;
+        if (message.isConnected) { this.renderCollection(selection.path); refreshUpdate(); }
+      }
     };
+    if (mode === 'explain' && kind) {
+      const updateArea = el.createDiv({cls:'note-digest-actions'});
+      const category = kind;
+      category.onchange = () => { updateArea.style.display = category.value === 'word' ? '' : 'none'; };
+      const showUpdate = async () => {
+        const matches = await this.plugin.collection.matchingWords(selection);
+        if (!el.isConnected) return;
+        updateArea.replaceChildren();
+        if (!matches.length) return;
+        let choose: HTMLSelectElement | undefined;
+        if (matches.length > 1) {
+          choose = updateArea.createEl('select', {attr:{'aria-label':'选择要更新的单词卡'}});
+          choose.createEl('option', {value:'',text:'选择要更新的单词卡'});
+          for (const record of matches) {
+            choose.createEl('option', {value:record.id,text:`${record.anchor.text.trim()} · ${record.result.translation}`});
+          }
+        }
+        const update = updateArea.createEl('button',{text:'用本次解释更新'});
+        const selectedCard = () => matches.find(record => record.id === (choose ? choose.value : matches[0].id));
+        const updateLabel = () => {
+          const card = selectedCard();
+          update.textContent = card?.pendingExplanation ? '继续上次更新' : '用本次解释更新';
+          update.disabled = !card || save.disabled;
+        };
+        if (choose) choose.onchange = updateLabel;
+        updateLabel();
+        update.onclick = async () => {
+          const card = selectedCard();
+          if (!card || save.disabled) return;
+          save.disabled = update.disabled = true;
+          if (choose) choose.disabled = true;
+          message.classList.remove('note-digest-save-duplicate');
+          message.textContent = '正在更新…';
+          try { message.textContent = await this.plugin.collection.updateExplanation(selection,card.id,result); }
+          catch (error) { message.textContent = error instanceof Error ? error.message : '更新失败，请重试。'; }
+          finally {
+            save.disabled = false;
+            if (choose) choose.disabled = false;
+            updateLabel();
+            if (message.isConnected) {
+              this.renderCollection(selection.path);
+              refreshUpdate();
+            }
+          }
+        };
+      };
+      refreshUpdate = () => { void showUpdate().catch(() => {}); };
+      refreshUpdate();
+    }
   }
   private renderCollection(path: string): void {
     this.contentEl.querySelector('.note-digest-collection')?.remove();

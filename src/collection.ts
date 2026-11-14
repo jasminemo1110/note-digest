@@ -1,5 +1,6 @@
 import { canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
 import { showAssessment } from './reading-layout';
+import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
 import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
 
@@ -8,7 +9,7 @@ export type SaveTarget = 'source' | 'note' | 'both';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
-  result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean;
+  result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean; pendingExplanation?: {result: DigestResult; copies: {path: string; before: string; after: string}[]};
 }
 export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
 export interface StoragePort {
@@ -63,6 +64,15 @@ export function loadCollection(input: unknown): CollectionData {
         (record.anchor.location !== undefined && (!record.anchor.location || !Number.isSafeInteger(record.anchor.location.start) ||
           record.anchor.location.start < record.anchor.offset || !/^[0-9a-f]{64}$/.test(record.anchor.location.digest))) ||
         typeof record.context !== 'string' || record.context.length > 14400) throw new Error('收藏条目数据损坏。');
+    if (record.pendingExplanation !== undefined) {
+      const pending = record.pendingExplanation;
+      if (record.kind !== 'word' || !pending || !Array.isArray(pending.copies) || !pending.copies.length ||
+          pending.copies.some(copy => !copy || !validPath(copy.path) ||
+            !/^[0-9a-f]{64}$/.test(copy.before) || !/^[0-9a-f]{64}$/.test(copy.after))) {
+        throw new Error('收藏更新数据损坏。');
+      }
+      pending.result = validateResult(pending.result, 'explain');
+    }
     recordIds.add(record.id);
     record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
   }
@@ -148,6 +158,68 @@ export function removeSavedRecord(current: string, record: LearningRecord, doc: 
   }
   throw new Error('旧卡片已手工修改且缺少结束标记，无法安全确定删除范围，请手动删除该卡片。');
 }
+function updateCard(current: string, record: LearningRecord, doc: SourceDocument, next: LearningRecord): string {
+  const marker = `<!-- note-digest:record:${record.id} -->`;
+  const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
+  const start = current.indexOf(marker);
+  const end = current.indexOf(endMarker);
+  const boundary = current.indexOf(LEARNING_BOUNDARY);
+  const owned = doc.path !== null && current.includes(`<!-- note-digest:document:${doc.id} -->`);
+  if (start < 0 || (!owned && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length))) {
+    throw new Error('找不到对应学习卡片。');
+  }
+  if (current.indexOf(marker, start + marker.length) >= 0 || (end >= 0 &&
+      (end < start || current.indexOf(endMarker, end + endMarker.length) >= 0 ||
+       /<!-- note-digest:(?:record:|group:|end:)/.test(current.slice(start + marker.length, end))))) {
+    throw new Error('卡片标记有歧义，已保留原卡。');
+  }
+  const variants = (value: LearningRecord) => [
+    groupedRecordMarkdown(value), groupedRecordMarkdown(value,true),
+    previousRecordMarkdown(value,doc), legacyRecordMarkdown(value,doc),
+  ].map(card => card.slice(card.indexOf(marker) + marker.length));
+  const replacement = variants(next);
+  if (end < 0) {
+    const old = variants(record).findIndex(card => current.startsWith(card, start + marker.length));
+    if (old >= 0) {
+      const offset = start + marker.length;
+      return current.slice(0,offset) + replacement[old] + current.slice(offset + variants(record)[old].length);
+    }
+  } else {
+    const offset = start + marker.length;
+    const body = current.slice(offset,end);
+    const expected = variants(record);
+    for (let index = 0; index < expected.length; index++) {
+      const merged = mergeCardBody(body,expected[index],replacement[index]);
+      if (merged !== undefined) return current.slice(0,offset) + merged + current.slice(end);
+    }
+  }
+  throw new Error('生成内容曾被手工修改，或无法确认备注位置，已保留原卡。');
+}
+
+async function digestText(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function matchingRecords(data: CollectionData, selection: SelectionSnapshot, kind: Kind, doc: SourceDocument) {
+  const body = articleBody(selection.source);
+  const range = normalizeCollectionRange(body, selection.start, selection.text, kind);
+  const anchor = makeAnchor(body, range.offset, range.text);
+  if (locateAnchor(body, anchor) === null) {
+    anchor.location = {start: range.offset, digest: await digestText(body)};
+  }
+  const matches = data.records.filter(record => {
+    if (record.documentId !== doc.id || record.kind !== kind) return false;
+    const previous = record.anchor;
+    const position = anchor.location && previous.location?.digest === anchor.location.digest
+      ? previous.location.start : locateAnchor(body, previous);
+    if (position === null) return false;
+    const normalized = normalizeCollectionRange(body, position, previous.text, kind);
+    return normalized.offset === range.offset && normalized.text === range.text;
+  });
+  return {anchor,matches};
+}
+
 function groupTokens(kind: Kind) {
   return {start: `<!-- note-digest:group:${kind} -->`, end: `<!-- note-digest:end:${kind} -->`};
 }
@@ -209,6 +281,11 @@ export class CollectionStore {
       }
       for (const record of next.records) record.savedTo = record.savedTo.map(path =>
         newPath !== null && (path === oldPath || path.startsWith(oldPath + '/')) ? newPath + path.slice(oldPath.length) : path);
+      if (newPath !== null) for (const record of next.records) {
+        for (const copy of record.pendingExplanation?.copies ?? []) {
+          if (copy.path === oldPath || copy.path.startsWith(oldPath + '/')) copy.path = newPath + copy.path.slice(oldPath.length);
+        }
+      }
       await this.commit(next);
     });
   }
@@ -248,6 +325,7 @@ export class CollectionStore {
       }
       const complete=targets.every(target=>target.ok);
       record.deletionPending=!complete;
+      if (complete) delete record.pendingExplanation;
       await this.commit(next);
       return {targets,complete};
     });
@@ -256,7 +334,7 @@ export class CollectionStore {
     return this.queue(async () => {
       const doc = this.data.documents.find(doc => doc.path === path);
       if (!doc) return '本文暂无收藏。';
-      const records = this.data.records.filter(record => record.documentId === doc.id);
+      const records = this.data.records.filter(record => record.documentId === doc.id && !record.pendingExplanation);
       const reports: string[] = [];
       for (const target of [path, doc.notePath]) {
         if (await this.port.read(target) === null) continue;
@@ -272,6 +350,74 @@ export class CollectionStore {
       return reports.join('\n') + '\n已手工改动或无法确认的旧卡片保持原样。';
     });
   }
+  async matchingWords(selection: SelectionSnapshot): Promise<LearningRecord[]> {
+    if (!canCollectSelection(selection)) return [];
+    const data = this.data;
+    const doc = data.documents.find(doc => doc.path === selection.path);
+    if (!doc) return [];
+    const {matches} = await matchingRecords(data,selection,'word',doc);
+    return structuredClone(matches.filter(record => record.savedTo.length && !record.deletionPending));
+  }
+  updateExplanation(selection: SelectionSnapshot, id: string, input: DigestResult): Promise<string> {
+    return this.queue(async () => {
+      const next = structuredClone(this.data);
+      const doc = next.documents.find(doc => doc.path === selection.path);
+      if (!doc || !canCollectSelection(selection)) throw new Error('无法确认要更新的收藏。');
+      const {matches} = await matchingRecords(next,selection,'word',doc);
+      const record = matches.find(record => record.id === id && record.savedTo.length && !record.deletionPending);
+      if (!record) throw new Error('找不到此选区对应的单词收藏。');
+      const body = articleBody(selection.source);
+      const source = await this.port.read(selection.path);
+      if (source === null || articleBody(source) !== body) throw new Error('原文已变化，请重新选词并解释。');
+
+      const pending = record.pendingExplanation;
+      const result = pending?.result ?? validateResult(input,'explain');
+      const updated = {...record,result};
+      const plans: {path: string; before: string; after: string; beforeHash: string; afterHash: string}[] = [];
+      // Check both copies before persisting intent or touching any note.
+      for (const path of new Set(record.savedTo)) {
+        try {
+          const before = await this.port.read(path);
+          if (before === null) throw new Error('学习卡片所在笔记已不存在。');
+          if (path === selection.path ? articleBody(before) !== body :
+              path !== doc.notePath || !before.includes(`<!-- note-digest:document:${doc.id} -->`)) {
+            throw new Error('原文或学习笔记已变化。');
+          }
+          const beforeHash = await digestText(before);
+          const saved = pending?.copies.find(copy => copy.path === path);
+          if (pending && beforeHash !== saved?.before && beforeHash !== saved?.after) {
+            throw new Error('笔记在上次更新后有改动，无法安全继续。');
+          }
+          const after = beforeHash === saved?.after ? before : updateCard(before,record,doc,updated);
+          const afterHash = await digestText(after);
+          if (saved && afterHash !== saved.after) throw new Error('无法确认上次更新的内容。');
+          plans.push({path,before,after,beforeHash,afterHash});
+        } catch (error) {
+          throw new Error(`${path}：${error instanceof Error ? error.message : '无法安全更新'}`);
+        }
+      }
+      if (!pending) {
+        record.pendingExplanation = {result,copies:plans.map(plan => ({
+          path:plan.path, before:plan.beforeHash, after:plan.afterHash,
+        }))};
+        await this.commit(next);
+      }
+      const failed: string[] = [];
+      for (const {path,before,after} of plans) {
+        try {
+          await this.port.update(path,current => {
+            if (current !== before) throw new Error('笔记刚刚有改动，已保留其内容。');
+            return after;
+          });
+        } catch (error) { failed.push(`${path}：${error instanceof Error ? error.message : '更新失败'}`); }
+      }
+      if (failed.length) return ['更新尚未完成，可重试。',...failed].join('\n');
+      record.result = result;
+      delete record.pendingExplanation;
+      await this.commit(next);
+      return pending ? '已完成上次更新' : '已更新单词卡';
+    });
+  }
   save(selection: SelectionSnapshot, input: DigestResult, kind: Kind, target: SaveTarget): Promise<SaveReport> {
     return this.queue(async () => {
       if (!validPath(selection.path) || this.isLearningNote(selection.path)) throw new Error('请选择原文章，不要收藏生成的学习笔记。');
@@ -279,9 +425,6 @@ export class CollectionStore {
       const current = await this.port.read(selection.path);
       if (current === null || articleBody(current) !== articleBody(selection.source)) throw new Error('原文已修改或移动，请重新选择后收藏。');
       const result = validateResult(input, kind === 'word' ? 'explain' : 'translate');
-      const body = articleBody(selection.source);
-      const range = normalizeCollectionRange(body, selection.start, selection.text, kind);
-      const anchor = makeAnchor(body, range.offset, range.text);
       const next = structuredClone(this.data);
       let doc = next.documents.find(doc => doc.path === selection.path);
       if (!doc) {
@@ -289,27 +432,17 @@ export class CollectionStore {
         const name = selection.path.split('/').pop()!.replace(/\.md$/, '').replace(/[<>:"/\\|?*\[\]#^]/g, '-').slice(0, 48);
         doc = {id, path: selection.path, notePath: `Digest/文章学习/${name}--${id}.md`}; next.documents.push(doc);
       }
-      // Identical paragraphs need an exact source snapshot to disambiguate their offsets.
-      if (locateAnchor(body, anchor) === null) {
-        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
-        const digest = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
-        anchor.location = {start: range.offset, digest};
-      }
-      const matches = next.records.filter(record => {
-        if (record.documentId !== doc.id || record.kind !== kind) return false;
-        const previous = record.anchor;
-        const position = anchor.location && previous.location?.digest === anchor.location.digest
-          ? previous.location.start : locateAnchor(body, previous);
-        if (position === null) return false;
-        const normalized = normalizeCollectionRange(body, position, previous.text, kind);
-        return normalized.offset === range.offset && normalized.text === range.text;
-      });
+      const {anchor,matches} = await matchingRecords(next,selection,kind,doc);
       let record = matches.find(record => record.active && record.savedTo.length) ??
         matches.find(record => record.savedTo.length) ?? matches[0];
       if (!record) {
         record = {id: this.uuid(), documentId: doc.id, kind, anchor, context: selection.context,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
       }
+      if (record.pendingExplanation) return {
+        record: structuredClone(record),
+        targets: [{path: selection.path, ok: true, message: '已收藏'}],
+      };
       record.active = true; record.deletionPending = false;
       // Durable intent before external writes: retries retain identity even after a partial failure/crash.
       await this.commit(next);
