@@ -32,7 +32,7 @@ test('toolbar precedes original; insert buttons directly follow translation; sav
   const {view,document,calls}=setup();view.render(selected,{translation:'有说服力的'});
   const toolbar=document.querySelector('.note-digest-toolbar')!;const original=document.querySelector('.note-digest-original')!;
   assert.ok(toolbar.compareDocumentPosition(original)&4);
-  assert.equal(document.querySelector('.note-digest-paragraph')?.textContent,'compelling有说服力的添加到原文下方添加到句后括号');
+  assert.equal(document.querySelector('.note-digest-paragraph')?.textContent,'compelling有说服力的添加到原文下方在选区后加括号');
   assert.equal(document.querySelector('.note-digest-save .note-digest-insert'),null);
   assert.equal((document.querySelector('[aria-label="收藏保存位置"]') as HTMLSelectElement).value,'both');
   const save=document.querySelector('.note-digest-save button') as HTMLButtonElement;assert.equal(save.textContent,'保存');
@@ -90,7 +90,7 @@ test('insert then explain uses updated source and original English context witho
   const {view,document,calls,plugin}=setup();
   (plugin as any).insert=async(selection:any,translation:string,mode:any)=>translationInsertion(selection.source,selection,translation,mode);
   view.render(selected,{translation:'有说服力的'});
-  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='在选区后加括号')!;
   await insert.onclick!(new (domEvent(document))('click') as any);
   const explain=[...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!;
   explain.click();
@@ -101,7 +101,7 @@ test('insert then explain uses updated source and original English context witho
 test('failed insertion leaves original selection usable and restores controls',async()=>{
   const {view,document,calls,plugin}=setup();(plugin as any).insert=async()=>undefined;
   view.render(selected,{translation:'有说服力的'});
-  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='在选区后加括号')!;
   await insert.onclick!(new (domEvent(document))('click') as any);
   const explain=[...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!;
   assert.equal(explain.disabled,false);explain.click();assert.equal(calls[0][1].source,selected.source);
@@ -111,7 +111,7 @@ test('late insertion response cannot replace a newer selected word in the sideba
   const {view,document,calls,plugin}=setup();let finish:(value:any)=>void=()=>{};
   (plugin as any).insert=()=>new Promise(resolve=>{finish=resolve;});
   view.render(selected,{translation:'有说服力的'});
-  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='添加到句后括号')!;
+  const insert=[...document.querySelectorAll('button')].find(button=>button.textContent==='在选区后加括号')!;
   const pending=insert.onclick!(new (domEvent(document))('click') as any);
   assert.equal([...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!.disabled,true);
   const next=snapshot('b.md','A different idea.','idea');view.render(next,{translation:'想法'});

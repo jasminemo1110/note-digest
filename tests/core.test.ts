@@ -22,9 +22,41 @@ test('below insertion retains rest of line and following paragraph', () => {
   const source = 'A compelling argument.\n\nNext paragraph.';
   assert.equal(insertTranslation(source, snapshot('a.md', source, 'compelling'), '有说服力', 'below'), 'A compelling argument.\n\n有说服力\n\nNext paragraph.');
 });
-test('complex Markdown remains read-only in the first increment', () => {
-  for (const source of ['- A word.', '**A word.**', '```\nA word.\n```', '> A word.', '---\ntitle: A word.\n---']) {
-    assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'word'), '词', 'inline'), /复杂/);
+test('both insertion modes preserve a single italic span and clipping line breaks', async () => {
+  const {translationInsertion, rebaseSelectionAfterInsertion} = await import('../src/core');
+  for (const marker of ['*', '_']) {
+    const paragraph = `${marker}(This essay is derived from a lecture.)${marker}  `;
+    for (const newline of ['\n', '\r\n']) {
+      const before = ['---', 'title: Example', '---', '  ', ''].join(newline);
+      const after = ['', '  ', 'Next paragraph.'].join(newline);
+      const source = before + paragraph + after;
+      const selected = snapshot('a.md', source, 'derived');
+      const inline = translationInsertion(source, selected, '源自', 'inline');
+      const below = translationInsertion(source, selected, '源自', 'below');
+      assert.equal(inline.after, before + paragraph.replace('derived', 'derived（源自）') + after);
+      assert.equal(below.after, before + paragraph + newline + newline + '源自' + after);
+      for (const [mode, receipt] of [['inline', inline], ['below', below]] as const) {
+        const rebased = rebaseSelectionAfterInsertion(selected, receipt)!;
+        assert.equal(rebased.text, selected.text);
+        assert.equal(rebased.context, selected.context);
+        assert.throws(() => insertTranslation(rebased.source, rebased, '源自', mode), /已包含/);
+      }
+    }
+  }
+});
+test('inline emphasis inside a plain paragraph keeps a translation before the closing delimiter', () => {
+  const source = 'This was *derived* from a talk.';
+  assert.equal(insertTranslation(source, snapshot('a.md', source, 'derived'), '源自', 'inline'), 'This was *derived（源自）* from a talk.');
+  assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'was *derived'), '译文', 'inline'), /复杂/);
+});
+test('complex Markdown remains read-only, even when it contains a simple italic span', () => {
+  for (const source of [
+    '- A *word*.', '**A word.**', '```\n*A word.*\n```', '\t*A word.*', '    *A word.*', '> *A word.*',
+    '---\ntitle: *A word.*\n---', '# *A word.*', '[*A word.*](link)', '`*A word.*`', '*A word.* | value',
+    '*A word and **another**.*', '\\*A word.*', 'A word and *another.', '*A word.*\n====', 'Previous line\n*A word.*']) {
+    for (const mode of ['inline', 'below'] as const) {
+      assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'word'), '词', mode), /复杂/);
+    }
   }
 });
 test('invalid, missing and excessive model fields are rejected', () => {

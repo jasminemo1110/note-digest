@@ -123,7 +123,7 @@ export class DigestView extends ItemView {
   }
   private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string, revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
     const writes=parent.createDiv({cls:'note-digest-actions note-digest-insert'});
-    for (const [label,mode] of [['添加到原文下方','below'],['添加到句后括号','inline']] as const) {
+    for (const [label,mode] of [['添加到原文下方','below'],['在选区后加括号','inline']] as const) {
       const button=writes.createEl('button',{text:label});
       button.onclick=async()=>{
         const controls=Array.from(this.contentEl.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select'));
