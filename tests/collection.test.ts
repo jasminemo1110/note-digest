@@ -31,6 +31,32 @@ test('both targets retain full explanation, source body and saved identity', asy
   assert.equal(locateAnchor(f.files.get(path)!,saved.record.anchor),source.indexOf('compelling'));
   assert.equal(new CollectionStore(loadCollection(f.durable()), f.port).recordsFor(path).length,1);
 });
+test('a short word in a long clipping with whitespace-only blank lines can be saved and located', async () => {
+  const f = fixture();
+  const paragraph = 'Some surrounding text. '.repeat(30).trim();
+  const body = [...Array(40).fill(paragraph), 'A compelling argument.', paragraph].join('\r\n \t\r\n');
+  assert.ok(body.length > 24000);
+  f.files.set(path, body);
+  const word = snapshot(path, body, 'compelling');
+  const saved = await f.store.save(word, result, 'word', 'both');
+  assert.ok(saved.targets.every(target => target.ok));
+  assert.equal(saved.record.anchor.block, 'A compelling argument.');
+  assert.equal(articleBody(f.files.get(path)!), body);
+  assert.equal(locateAnchor(f.files.get(path)!, saved.record.anchor), word.start);
+});
+test('an older anchor across whitespace-only blank lines remains locatable and reuses the existing card', async () => {
+  const f = fixture();
+  const body = 'Preface.\n \nA compelling argument.';
+  f.files.set(path, body);
+  const first = await f.store.save(snapshot(path, body, 'compelling'), result, 'word', 'note');
+  const historical = f.durable();
+  historical.records[0].anchor = {block: body, offset: body.indexOf('compelling'), text: 'compelling'};
+  assert.equal(locateAnchor(body, historical.records[0].anchor), body.indexOf('compelling'));
+  const reopened = new CollectionStore(loadCollection(historical), f.port);
+  const again = await reopened.save(snapshot(path, body, 'compelling'), result, 'word', 'note');
+  assert.equal(again.record.id, first.record.id);
+  assert.equal(reopened.recordsFor(path).length, 1);
+});
 test('repeat save and recapture after generated tail never duplicate or overwrite manual edits', async () => {
   const f=fixture(); const first=await f.store.save(select(),result,'word','both');
   const note=first.targets[1].path;

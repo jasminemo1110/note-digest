@@ -1,7 +1,7 @@
 import { ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
 import { showAssessment } from './reading-layout';
 import { shortContext } from './reading-actions';
-import { articleBody, LEARNING_BOUNDARY, makeAnchor, type Anchor } from './anchors';
+import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, type Anchor } from './anchors';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
@@ -267,8 +267,9 @@ export class CollectionStore {
         const name = selection.path.split('/').pop()!.replace(/\.md$/, '').replace(/[<>:"/\\|?*\[\]#^]/g, '-').slice(0, 48);
         doc = {id, path: selection.path, notePath: `Digest/文章学习/${name}--${id}.md`}; next.documents.push(doc);
       }
-      let record = next.records.find(record => record.documentId === doc!.id && record.kind === kind &&
-        record.anchor.block === anchor.block && record.anchor.offset === anchor.offset && record.anchor.text === anchor.text);
+      let record = next.records.find(record => record.documentId === doc!.id && record.kind === kind && record.anchor.text === anchor.text &&
+        ((record.anchor.block === anchor.block && record.anchor.offset === anchor.offset) ||
+          locateAnchor(selection.source, record.anchor) === selection.start));
       if (!record) {
         record = {id: this.uuid(), documentId: doc.id, kind, anchor, context: selection.context,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
