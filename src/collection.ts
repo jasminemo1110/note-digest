@@ -1,4 +1,4 @@
-import { ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
+import { canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot } from './core';
 import { showAssessment } from './reading-layout';
 import { shortContext } from './reading-actions';
 import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, type Anchor } from './anchors';
@@ -256,6 +256,7 @@ export class CollectionStore {
   save(selection: SelectionSnapshot, input: DigestResult, kind: Kind, target: SaveTarget): Promise<SaveReport> {
     return this.queue(async () => {
       if (!validPath(selection.path) || this.isLearningNote(selection.path)) throw new Error('请选择原文章，不要收藏生成的学习笔记。');
+      if (!canCollectSelection(selection)) throw new Error('无法确认收藏内容在原文中的位置。');
       const current = await this.port.read(selection.path);
       if (current === null || articleBody(current) !== articleBody(selection.source)) throw new Error('原文已修改或移动，请重新选择后收藏。');
       const result = validateResult(input, kind === 'word' ? 'explain' : 'translate');

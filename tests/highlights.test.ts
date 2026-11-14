@@ -41,12 +41,3 @@ test('unsupported formatted paragraphs skip highlight rather than guessing offse
   const source='A **compelling** argument.';const saved=record(source,'compelling');
   assert.deepEqual(highlightRanges(source,0,0,'A compelling argument.',[saved]),[]);
 });
-
-test('reading selection resolves repeated words within the actual paragraph', async()=>{
-  const {renderedSelectionOffset}=await import('../src/anchors');
-  const source='A compelling argument.\n\nA compelling story.';
-  assert.equal(renderedSelectionOffset(source,2,2,'A compelling story.',2,'compelling'),source.lastIndexOf('compelling'));
-  assert.equal(renderedSelectionOffset(source,0,2,'A compelling story.',2,'compelling'),source.lastIndexOf('compelling'));
-  assert.equal(renderedSelectionOffset(source,0,0,'A compelling new argument.',2,'compelling'),undefined);
-  assert.equal(renderedSelectionOffset('Same.\n\nSame.',0,2,'Same.',0,'Same'),undefined);
-});

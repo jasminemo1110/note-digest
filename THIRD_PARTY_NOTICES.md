@@ -6,3 +6,5 @@ Note Digest 的产品设计借鉴 X Digest 的双语阅读和语境学习体验�
 - YouTube Digest: https://github.com/zarazhangrui/youtube-digest
 
 初始 Note Digest 实现独立编写，未复制上述项目源码或提示词。未来复用时须记录文件来源并保留相应版权与许可声明。构建工具和 Obsidian 类型依赖遵循各自许可。
+
+Markdown 源码定位使用 [mdast-util-from-markdown](https://github.com/syntax-tree/mdast-util-from-markdown) 及其依赖。构建在插件文件末尾保留所打包依赖的许可证。

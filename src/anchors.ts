@@ -46,15 +46,3 @@ export function locateAnchor(source: string, anchor: Anchor): number | null {
   }
   return matches.size === 1 ? matches.values().next().value ?? null : null;
 }
-
-/** Resolve a reading-view selection against its source section, not a global word search. */
-export function renderedSelectionOffset(source: string, lineStart: number, lineEnd: number, paragraph: string, localOffset: number, text: string): number | undefined {
-  if (!Number.isInteger(localOffset) || localOffset < 0 || paragraph.slice(localOffset, localOffset + text.length) !== text) return undefined;
-  const lines = source.split('\n');
-  const sectionStart = lines.slice(0, lineStart).reduce((sum, line) => sum + line.length + 1, 0);
-  const section = lines.slice(lineStart, lineEnd + 1).join('\n');
-  const start = section.indexOf(paragraph);
-  if (!paragraph || start < 0 || section.indexOf(paragraph, start + 1) !== -1) return undefined;
-  const offset = sectionStart + start + localOffset;
-  return articleBody(source).slice(offset, offset + text.length) === text ? offset : undefined;
-}

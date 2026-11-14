@@ -1,5 +1,5 @@
 import { MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
-import { snapshot, translationInsertion, type InsertionReceipt, type SelectionSnapshot, type Action } from './core';
+import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type InsertionReceipt, type SelectionSnapshot, type Action } from './core';
 import { digest, summarizeArticle, translateParagraphs } from './provider';
 import { planArticleSummary, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection } from './reading-layout';
@@ -8,7 +8,7 @@ import { DigestView, VIEW_TYPE } from './view';
 import { CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
-import { locateAnchor, renderedSelectionOffset } from './anchors';
+import { locateAnchor } from './anchors';
 import type { DigestResult } from './core';
 import { readingShortcut } from './reading-actions';
 
@@ -20,7 +20,7 @@ export default class NoteDigestPlugin extends Plugin {
   private stopped = false;
   private quoteBusy = false;
   private summaryJob?: { generation: number; path: string; cancelled: boolean };
-  private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number}>();
+  private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number; text: string}>();
   private selectionButton?: HTMLButtonElement;
   async onload(): Promise<void> {
     this.stopped = false;
@@ -65,7 +65,7 @@ export default class NoteDigestPlugin extends Plugin {
     });
     this.registerMarkdownPostProcessor(async (element, context) => {
       const section = context.getSectionInfo(element);
-      if (section) this.renderedSections.set(element, {path: context.sourcePath, lineStart: section.lineStart, lineEnd: section.lineEnd});
+      if (section) this.renderedSections.set(element, {path: context.sourcePath, lineStart: section.lineStart, lineEnd: section.lineEnd, text: section.text});
       const records = this.collection.recordsFor(context.sourcePath);
       if (!records.length) return;
       const file = this.app.vault.getAbstractFileByPath(context.sourcePath);
@@ -233,24 +233,32 @@ export default class NoteDigestPlugin extends Plugin {
         let sectionElement: HTMLElement | null = paragraph ?? null;
         while (sectionElement && !this.renderedSections.has(sectionElement)) sectionElement = sectionElement.parentElement;
         const section = sectionElement ? this.renderedSections.get(sectionElement) : undefined;
-        let localOffset: number | undefined;
-        if (paragraph && paragraph.contains(nativeRange.endContainer)) {
-          const prefix = nativeRange.cloneRange(); prefix.selectNodeContents(paragraph);
-          prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset); localOffset = prefix.toString().length;
+        let rendered: Parameters<typeof readingSnapshot>[3];
+        if (paragraph && sectionElement && section?.path === path &&
+            !paragraph.closest('.internal-embed, .markdown-embed, blockquote, li, table') && paragraph.contains(nativeRange.endContainer)) {
+          const paragraphText = paragraph.textContent ?? '';
+          const normalizedParagraph = paragraphText.replace(/[ \t\r\n]+/g, ' ');
+          const matching = Array.from(sectionElement.querySelectorAll('p'))
+            .filter(other => other.textContent?.replace(/[ \t\r\n]+/g, ' ') === normalizedParagraph);
+          if (sectionElement === paragraph || (matching.length === 1 && matching[0] === paragraph)) {
+            const prefix = nativeRange.cloneRange();
+            prefix.selectNodeContents(paragraph);
+            prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset);
+            rendered = {section, paragraph: paragraphText, offset: prefix.toString().length};
+          }
         }
         const source = await this.app.vault.read(view.file);
-        const offset = paragraph && localOffset !== undefined && section?.path === path
-          ? renderedSelectionOffset(source, section.lineStart, section.lineEnd, paragraph.textContent ?? '', localOffset, text) : undefined;
-        selected = snapshot(path, source, text, offset);
+        selected = readingSnapshot(path, source, text, rendered);
       }
       if (action === 'digest' && isLongSelection(selected.text)) {
         const generation = ++this.generation; const panel = await this.openPanel();
         if (generation === this.generation && !this.stopped) panel.render(selected,undefined,'','idle');
         return;
       }
+      if (action === 'quote' && !canCollectSelection(selected)) new Notice('无法确认原文位置，译文仅显示在侧栏。');
       const requestGeneration = this.generation + 1;
       const result = await this.run(selected, 'translate');
-      if (action === 'quote' && result && requestGeneration === this.generation && !this.stopped) {
+      if (action === 'quote' && canCollectSelection(selected) && result && requestGeneration === this.generation && !this.stopped) {
         const status = await this.collect(selected, result, 'quote', 'both');
         new Notice(status);
         if (requestGeneration === this.generation && !this.stopped) (await this.openPanel()).render(selected, result, status);
@@ -268,7 +276,7 @@ export default class NoteDigestPlugin extends Plugin {
       if (!(file instanceof TFile) || await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      const result = action === 'translate' && isLongSelection(selection.text)
+      const result = action === 'translate' && !selection.readOnly && isLongSelection(selection.text) && canCollectSelection(selection)
         ? await translateParagraphs(selection,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,
           (done,total)=>{ if(generation===this.generation) panel.render(selection,undefined,`正在翻译 ${done}/${total} 段…`,action); })
         : await digest(selection, action, key ?? '', requestUrl);

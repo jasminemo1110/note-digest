@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
-import {snapshot,type DigestResult} from '../src/core';
+import {readingSnapshot,snapshot,type DigestResult} from '../src/core';
 import {planArticleSummary} from '../src/article-summary';
 const bundled=await build({entryPoints:['src/view.ts'],bundle:true,write:false,format:'cjs',external:['obsidian'],platform:'node'});
 function setup() {
@@ -118,4 +118,13 @@ test('late insertion response cannot replace a newer selected word in the sideba
   finish(translationInsertion(selected.source,selected,'有说服力的','inline'));await pending;
   [...document.querySelectorAll('button')].find(button=>button.textContent==='语境解释')!.click();
   assert.equal(calls[0][1].path,'b.md');assert.equal(calls[0][1].text,'idea');
+});
+
+
+test('an unresolved reading selection displays its translation without insert or save controls', () => {
+  const {view,document} = setup();
+  const selection = readingSnapshot('a.md', 'An unrelated example.', 'example');
+  view.render(selection, {translation:'例子'});
+  assert.match(document.body.textContent!, /例子/);
+  assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
 });

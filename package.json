@@ -1,6 +1,6 @@
 {
   "name": "note-digest",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Contextual reading and learning inside Obsidian",
   "type": "module",
@@ -17,5 +17,8 @@
     "tsx": "^4.20.0",
     "typescript": "^5.8.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.1.0"
+  }
 }

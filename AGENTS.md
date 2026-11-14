@@ -16,7 +16,8 @@
 - src/settings.ts：非敏感设置与 SecretStorage 选择界面。
 - src/collection.ts：版本化收藏数据、同语境去重、串行事务、逐目标幂等追加；视图不得自行覆盖文件。
 - src/vault-storage.ts：Vault.process、独占创建、未同步编辑保护。
-- src/anchors.ts：排除生成学习区、段落锚点及阅读选区定位。
+- src/anchors.ts：排除生成学习区与段落锚点。
+- src/markdown-source.ts：Markdown 结构、阅读选区映射和插入位置。
 - src/article-summary.ts：全文摘要的本地分节与原文偏移。
 - src/reading-layout.ts：长选区判断、本地段落范围、结果展示规则。
 - src/reading-actions.ts：展示用精简语境和阅读快捷键保护；不改变 AI 分析上下文。

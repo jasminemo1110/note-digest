@@ -49,13 +49,14 @@ test('inline emphasis inside a plain paragraph keeps a translation before the cl
   assert.equal(insertTranslation(source, snapshot('a.md', source, 'derived'), '源自', 'inline'), 'This was *derived（源自）* from a talk.');
   assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'was *derived'), '译文', 'inline'), /复杂/);
 });
-test('complex Markdown remains read-only, even when it contains a simple italic span', () => {
+test('writes refuse non-prose blocks and unsupported Obsidian syntax', () => {
   for (const source of [
-    '- A *word*.', '**A word.**', '```\n*A word.*\n```', '\t*A word.*', '    *A word.*', '> *A word.*',
-    '---\ntitle: *A word.*\n---', '# *A word.*', '[*A word.*](link)', '`*A word.*`', '*A word.* | value',
-    '*A word and **another**.*', '\\*A word.*', 'A word and *another.', '*A word.*\n====', 'Previous line\n*A word.*']) {
+    '- A *word*.', '```\n*A word.*\n```', '\t*A word.*', '    *A word.*', '> *A word.*',
+    '---\ntitle: *A word.*\n---', '# *A word.*', '`*A word.*`', '*A word.* | value',
+    '*A word.*\n====', 'A word. [[Note|alias]]', 'A word. ^block',
+  ]) {
     for (const mode of ['inline', 'below'] as const) {
-      assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'word'), '词', mode), /复杂/);
+      assert.throws(() => insertTranslation(source, snapshot('a.md', source, 'word'), '词', mode), /复杂/, source);
     }
   }
 });

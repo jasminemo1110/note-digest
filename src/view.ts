@@ -5,7 +5,7 @@ import type { Kind, SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
-import { ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type SelectionSnapshot } from './core';
+import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type SelectionSnapshot } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -85,7 +85,7 @@ export class DigestView extends ItemView {
         }
       }
     }
-    this.renderSave(selection,result,mode);
+    if (canCollectSelection(selection)) this.renderSave(selection,result,mode);
     this.renderCollection(selection.path);
   }
   renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
@@ -122,8 +122,11 @@ export class DigestView extends ItemView {
     if (!running) this.renderCollection(path);
   }
   private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string, revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
-    const writes=parent.createDiv({cls:'note-digest-actions note-digest-insert'});
+    let writes: HTMLElement | undefined;
     for (const [label,mode] of [['添加到原文下方','below'],['在选区后加括号','inline']] as const) {
+      try { translationInsertion(selection.source, selection, translation, mode); }
+      catch { continue; }
+      writes ??= parent.createDiv({cls:'note-digest-actions note-digest-insert'});
       const button=writes.createEl('button',{text:label});
       button.onclick=async()=>{
         const controls=Array.from(this.contentEl.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select'));
@@ -136,6 +139,7 @@ export class DigestView extends ItemView {
         }
       };
     }
+    if (!writes) parent.createEl('p',{text:'无法安全插入，译文保留在侧栏。',cls:'note-digest-muted'});
   }
   private renderSave(selection: SelectionSnapshot, result: DigestResult, mode: Action): void {
     const el=this.contentEl.createDiv({cls:'note-digest-save'});
