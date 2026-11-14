@@ -155,11 +155,16 @@ export class DigestView extends ItemView {
       kind.createEl('option',{value:'word',text:'单词（完整解释）'});
       kind.createEl('option',{value:'quote',text:'金句与译文'});
     }
-    const message=el.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
     const save=el.createEl('button',{text:'保存',cls:'mod-cta'});
+    const message=el.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
     save.onclick=async()=>{
       save.disabled=true;message.textContent='正在保存…';
-      try { message.textContent=await this.plugin.collect(selection,result,(kind?.value ?? 'quote') as Kind,target.value as SaveTarget); }
+      message.classList.remove('note-digest-save-duplicate');
+      try {
+        const feedback = await this.plugin.collect(selection,result,(kind?.value ?? 'quote') as Kind,target.value as SaveTarget);
+        message.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
+        message.textContent = feedback.text;
+      }
       catch(error) { message.textContent=error instanceof Error ? error.message : '保存失败，请重试。'; }
       finally { save.disabled=false;if(message.isConnected)this.renderCollection(selection.path); }
     };

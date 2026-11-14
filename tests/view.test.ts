@@ -22,7 +22,7 @@ function setup() {
   class ItemView {contentEl=document.createElement('div');app=app;constructor(){document.body.append(this.contentEl);}}
   const module={exports:{} as any};
   new Function('require','module','exports',bundled.outputFiles[0].text)(()=>({ItemView}),module,module.exports);
-  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return '已保存';},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
+  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return {text:'已保存',duplicate:false};},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
     summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
   return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
@@ -127,4 +127,16 @@ test('an unresolved reading selection displays its translation without insert or
   view.render(selection, {translation:'例子'});
   assert.match(document.body.textContent!, /例子/);
   assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
+});
+
+test('duplicate saving shows one prominent message without paths', async () => {
+  const {view,document,plugin}=setup();
+  plugin.collect=async()=>({text:'本词已收藏',duplicate:true});
+  view.render(selected,explained);
+  const section=document.querySelector('.note-digest-save')!;
+  const save=section.querySelector('button')!;
+  await save.onclick!(new (domEvent(document))('click') as any);
+  const message=section.querySelector('[role="status"]')!;
+  assert.equal(message.textContent,'本词已收藏');
+  assert.ok(message.classList.contains('note-digest-save-duplicate'));
 });

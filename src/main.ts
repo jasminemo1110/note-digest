@@ -5,7 +5,7 @@ import { planArticleSummary, type ArticlePart, type ArticleSummary } from './art
 import { isLongSelection } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
-import { CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
+import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
 import { locateAnchor } from './anchors';
@@ -106,10 +106,10 @@ export default class NoteDigestPlugin extends Plugin {
       if (leaf.view instanceof MarkdownView && leaf.view.getMode() === 'preview') leaf.view.previewMode.rerender(true);
     }
   }
-  async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget): Promise<string> {
+  async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget): Promise<ReturnType<typeof collectionFeedback>> {
     const report = await this.collection.save(selection, result, kind, target);
     this.refreshHighlights();
-    return report.targets.map(item => `${item.ok ? '✓' : '未完成'} ${item.path}：${item.message}`).join('\n');
+    return collectionFeedback(report);
   }
   async removeHighlight(id: string): Promise<void> {
     await this.collection.deactivate(id); this.refreshHighlights();
@@ -259,7 +259,7 @@ export default class NoteDigestPlugin extends Plugin {
       const requestGeneration = this.generation + 1;
       const result = await this.run(selected, 'translate');
       if (action === 'quote' && canCollectSelection(selected) && result && requestGeneration === this.generation && !this.stopped) {
-        const status = await this.collect(selected, result, 'quote', 'both');
+        const {text: status} = await this.collect(selected, result, 'quote', 'both');
         new Notice(status);
         if (requestGeneration === this.generation && !this.stopped) (await this.openPanel()).render(selected, result, status);
       }

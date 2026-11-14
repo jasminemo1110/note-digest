@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CollectionStore, loadCollection, recordMarkdown, type CollectionData, type StoragePort } from '../src/collection';
+import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, type CollectionData, type StoragePort } from '../src/collection';
 import { snapshot, type DigestResult } from '../src/core';
 import { articleBody, locateAnchor, LEARNING_BOUNDARY } from '../src/anchors';
 const source = '# Article\n\nA compelling argument.\n\nA compelling story.';
@@ -226,7 +226,7 @@ test('natural usage omits advice, errors preserve correction; words and quotes h
   for(const target of word.targets){
     const text=f.files.get(target.path)!;assert.ok(text.includes('### 单词'));assert.ok(text.includes('### 金句'));
     const wordStart=text.indexOf('<!-- note-digest:group:word -->');const wordEnd=text.indexOf('<!-- note-digest:end:word -->');
-    assert.ok(text.indexOf('#### 词语')>wordStart && text.indexOf('#### 词语')<wordEnd);
+    assert.ok(text.indexOf('#### compelling')>wordStart && text.indexOf('#### compelling')<wordEnd);
     assert.ok(text.indexOf('#### 金句')>wordEnd);
   }
 });
@@ -299,4 +299,30 @@ test('write success followed by metadata failure leaves a retryable deletion int
   f.port.persist=async data=>{if(++count===2)throw new Error('状态写入失败');await persist(data);};
   const partial=await f.store.removeNotes(saved.record.id);assert.equal(partial.complete,false);
   const restarted=new CollectionStore(loadCollection(f.durable()),f.port);assert.equal((await restarted.removeNotes(saved.record.id)).complete,true);
+});
+
+test('save feedback condenses duplicates and reports a failed destination', async () => {
+  const f=fixture();
+  await f.store.save(select(),result,'word','both');
+  const duplicate=await f.store.save(select(),result,'word','both');
+  assert.deepEqual(collectionFeedback(duplicate),{text:'本词已收藏',duplicate:true});
+  f.fail('Digest/');
+  const failure=await f.store.save(select(),result,'word','both');
+  const feedback=collectionFeedback(failure);
+  assert.equal(feedback.duplicate,false);
+  assert.match(feedback.text,/部分位置已有收藏/);
+  assert.match(feedback.text,/Digest.*模拟磁盘失败/);
+  assert.ok(!feedback.text.includes(path));
+});
+
+test('explicit card cleanup removes the old word prefix only from an exact generated card', async () => {
+  const {compactLegacyCards}=await import('../src/collection');
+  const f=fixture();
+  const saved=await f.store.save(select(),result,'word','source');
+  const original=f.files.get(path)!;
+  const legacy=original.replace('#### compelling','#### 词语：compelling');
+  const doc=f.durable().documents[0];
+  assert.deepEqual(compactLegacyCards(legacy,[saved.record],doc),{text:original,count:1});
+  const edited=legacy.replace('有说服力的','手动补充');
+  assert.deepEqual(compactLegacyCards(edited,[saved.record],doc),{text:edited,count:0});
 });

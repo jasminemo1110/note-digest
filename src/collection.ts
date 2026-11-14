@@ -18,6 +18,17 @@ export interface StoragePort {
   persist(data: CollectionData): Promise<void>;
 }
 export interface SaveReport { record: LearningRecord; targets: { path: string; ok: boolean; message: string }[] }
+export function collectionFeedback(report: SaveReport): {text: string; duplicate: boolean} {
+  const failed = report.targets.filter(target => !target.ok);
+  const saved = report.targets.some(target => target.ok && target.message === '已保存');
+  if (failed.length) {
+    const details = failed.map(target => `未完成 ${target.path}：${target.message}`);
+    if (failed.length < report.targets.length) details.unshift(saved ? '已保存到部分位置' : '部分位置已有收藏');
+    return {text: details.join('\n'), duplicate: false};
+  }
+  if (saved) return {text: '已保存', duplicate: false};
+  return {text: report.record.kind === 'word' ? '本词已收藏' : '此金句已收藏', duplicate: true};
+}
 const ID = /^[a-zA-Z0-9-]{1,80}$/;
 function validPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1000 && !/[\r\n\0\\]/.test(value) &&
@@ -93,9 +104,10 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
   }
   return text + '\n';
 }
-function groupedRecordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+function groupedRecordMarkdown(record: LearningRecord, historicalWordPrefix = false): string {
   const result = record.result;
-  let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
+  const prefix = record.kind === 'quote' ? '金句：' : historicalWordPrefix ? '词语：' : '';
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${prefix}${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
   text += `\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
@@ -110,8 +122,8 @@ function groupedRecordMarkdown(record: LearningRecord, _doc: SourceDocument): st
   }
   return text + '\n';
 }
-export function recordMarkdown(record: LearningRecord, doc: SourceDocument): string {
-  return groupedRecordMarkdown(record, doc) + `<!-- note-digest:record-end:${record.id} -->\n`;
+export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
+  return groupedRecordMarkdown(record) + `<!-- note-digest:record-end:${record.id} -->\n`;
 }
 export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument): {text: string; removed: boolean} {
   const marker = `<!-- note-digest:record:${record.id} -->`;
@@ -130,7 +142,7 @@ export function removeSavedRecord(current: string, record: LearningRecord, doc: 
     return {text: current.slice(0,start) + current.slice(finish), removed: true};
   }
   // Historical cards have no closing marker. Delete only exact known output, leaving manual additions untouched.
-  for (const candidate of [groupedRecordMarkdown(record,doc), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)]) {
+  for (const candidate of [groupedRecordMarkdown(record,true), groupedRecordMarkdown(record), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)]) {
     const index = current.indexOf(candidate);
     if (index >= 0 && index + candidate.indexOf(marker) === start) return {text:current.slice(0,index)+current.slice(index+candidate.length),removed:true};
   }
@@ -153,7 +165,12 @@ export function compactLegacyCards(current: string, records: LearningRecord[], d
   let text = current; let count = 0;
   for (const record of records) {
     if (text.includes(recordMarkdown(record, doc))) continue;
-    const grouped = groupedRecordMarkdown(record, doc);
+    const closing = `<!-- note-digest:record-end:${record.id} -->\n`;
+    const grouped = groupedRecordMarkdown(record, true);
+    if (text.includes(closing.trimEnd())) {
+      if (text.includes(grouped + closing)) { text = text.replace(grouped + closing, recordMarkdown(record,doc)); count++; }
+      continue;
+    }
     if (text.includes(grouped)) { text = text.replace(grouped,recordMarkdown(record,doc)); count++; continue; }
     const candidates = [legacyRecordMarkdown(record, doc), previousRecordMarkdown(record, doc)];
     const old = candidates.find(candidate => text.includes(candidate));
