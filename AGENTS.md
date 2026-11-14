@@ -35,7 +35,8 @@
 
 ## 开发与验证
 - npm test：行为测试；npm run build：类型检查与插件构建。
-- 自动测试不等于 Obsidian 验证；发布前使用 examples/test-vault 完成 docs/TESTING.md。
+- 插件改动通过 `npm test` 和 `npm run build` 后，直接更新现有 English Learning Vault 中的 Note Digest，无需逐次确认或另建测试仓库。
+- 安装目录为 `/Users/lixiaonan/Documents/English Learning Vault/.obsidian/plugins/note-digest/`。只替换构建产物 `main.js`、`manifest.json` 和 `styles.css`，保留 `data.json`、原有收藏、设置和笔记。安装后用 Obsidian CLI 重载插件并确认版本和启用状态，实际使用测试由茉白在该 Vault 中完成。
 - 使用 main 维护已验证增量；不确定或大范围实验使用 codex/ 分支。
 - 每个完整逻辑变更验证后及时提交，中文 message 写原因，精确 git add；不自行 push 或发布。
 - 功能范围、进度和待办只在 docs/PRODUCT.md 与 docs/ROADMAP.md 维护。
