@@ -1,5 +1,6 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
+import type { ArticleSummary } from './article-summary';
 import type { Kind, SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
@@ -13,21 +14,34 @@ export class DigestView extends ItemView {
   getDisplayText(): string { return 'Note Digest'; }
   getIcon(): string { return 'book-open-text'; }
   async onOpen(): Promise<void> { this.render(); }
+  async onClose(): Promise<void> { this.plugin.stopArticleSummary(); }
+  private startRender(): HTMLElement {
+    this.renderRevision++;
+    const el = this.contentEl;
+    el.empty(); el.addClass('note-digest-panel');
+    el.createEl('h2', {text: 'Note Digest'});
+    return el;
+  }
+  private summaryButton(parent: HTMLElement, text = '总结全文', previous?: ArticleSummary): void {
+    const button = parent.createEl('button', {text});
+    button.onclick = () => { void this.plugin.summarizeCurrentArticle(previous); };
+  }
   render(selection?: SelectionSnapshot, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
-    const revision = ++this.renderRevision;
-    const el = this.contentEl; el.empty(); el.addClass('note-digest-panel');
-    el.createEl('h2', { text: 'Note Digest' });
+    const el = this.startRender();
+    const revision = this.renderRevision;
+    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
     if (!selection) {
+      this.summaryButton(actions);
       el.createEl('p', {text: '在文章中选择英文，再点击 Digest 或按 D。'});
       const path = this.app.workspace.getActiveFile()?.path; if (path) this.renderCollection(path); return;
     }
-    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
     const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
     if (isLongSelection(selection.text)) choices.unshift(['Summarize','summarize']);
     for (const [label, action] of choices) {
       const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(action===mode)}});
       button.onclick = () => { void this.plugin.run(selection, action); };
     }
+    this.summaryButton(actions);
     if (mode === 'idle') {
       el.createEl('p', {text:'已选中长段落。请选择 Summarize、翻译或语境解释。',cls:'note-digest-muted'}); return;
     }
@@ -73,6 +87,39 @@ export class DigestView extends ItemView {
     }
     this.renderSave(selection,result,mode);
     this.renderCollection(selection.path);
+  }
+  renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
+    const el = this.startRender();
+    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'全文摘要操作'}});
+    if (running) {
+      const stop = actions.createEl('button', {text:'停止摘要'});
+      stop.onclick = () => {
+        this.plugin.stopArticleSummary();
+        this.renderArticleSummary(path, article, '摘要已停止。');
+      };
+    } else {
+      if (article && !article.overview) this.summaryButton(actions, article.sections.length ? '继续摘要' : '重试摘要', article);
+      this.summaryButton(actions, article?.overview ? '重新总结全文' : '总结全文');
+    }
+    const title = path.split('/').at(-1)?.replace(/\.md$/, '') ?? path;
+    el.createEl('h3', {text:title, cls:'note-digest-original'});
+    if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
+    if (article?.overview) {
+      el.createEl('h4', {text:'全文概览'});
+      el.createEl('p', {text:article.overview, cls:'note-digest-result'});
+    }
+    if (article?.sections.length && article.parts.length > 1) {
+      const heading = article.overview ? '分节摘要' : `部分摘要 · 已完成 ${article.sections.length}/${article.parts.length} 节`;
+      el.createEl('h4', {text:heading});
+      article.sections.forEach((section, index) => {
+        const row = el.createDiv({cls:'note-digest-paragraph'});
+        row.createEl('h5', {text:section.title, cls:'note-digest-original'});
+        row.createEl('p', {text:section.summary, cls:'note-digest-result'});
+        const locate = row.createEl('button', {text:'定位原文'});
+        locate.onclick = () => { void this.plugin.revealArticlePart(article, article.parts[index]); };
+      });
+    }
+    if (!running) this.renderCollection(path);
   }
   private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string, revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
     const writes=parent.createDiv({cls:'note-digest-actions note-digest-insert'});

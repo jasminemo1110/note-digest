@@ -1,10 +1,10 @@
 # Note Digest 项目约定
 
 ## 定位与边界
-- 独立 Obsidian 桌面插件，只处理用户主动选择的 Markdown 内容；不依赖 X Digest 或 YouTube Digest 运行时。
+- 独立 Obsidian 桌面插件，只处理用户主动选择的 Markdown 内容或主动要求总结的当前文章；不依赖 X Digest 或 YouTube Digest 运行时。
 - V1 英文 → 简体中文；语言策略保留日语扩展点，V2 再实现日语规则，不提前暴露未完成选项。
 - 阅读和 AI 结果默认临时显示。只有明确点击插入、收藏或生成笔记才允许持久写入。
-- 不扫描全库发送 AI；只发送当前操作所需的选区和有界上下文。
+- 不扫描全库发送 AI；选区操作只发送选区和有界上下文，全文摘要仅在用户主动触发后分节发送当前文章正文，排除顶部属性和文末学习区。
 - API Key 通过 Obsidian SecretStorage 获取，data.json 仅存密钥名称；禁止日志、源码、测试夹具和导出包含真实密钥。
 - AI 输出不可信：结构与长度校验，界面用 textContent，写 Markdown 时转义。
 
@@ -17,6 +17,7 @@
 - src/collection.ts：版本化收藏数据、同语境去重、串行事务、逐目标幂等追加；视图不得自行覆盖文件。
 - src/vault-storage.ts：Vault.process、独占创建、未同步编辑保护。
 - src/anchors.ts：排除生成学习区、段落锚点及阅读选区定位。
+- src/article-summary.ts：全文摘要的本地分节与原文偏移。
 - src/reading-layout.ts：长选区判断、本地段落范围、结果展示规则。
 - src/reading-actions.ts：展示用精简语境和阅读快捷键保护；不改变 AI 分析上下文。
 - src/highlights.ts：原文范围核对和 DOM 高亮；不修改源 Markdown。

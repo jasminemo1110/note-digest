@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
 import {snapshot,type DigestResult} from '../src/core';
+import {planArticleSummary} from '../src/article-summary';
 const bundled=await build({entryPoints:['src/view.ts'],bundle:true,write:false,format:'cjs',external:['obsidian'],platform:'node'});
 function setup() {
   const dom=new JSDOM('<body></body>');const document=dom.window.document;
@@ -21,7 +22,8 @@ function setup() {
   class ItemView {contentEl=document.createElement('div');app=app;constructor(){document.body.append(this.contentEl);}}
   const module={exports:{} as any};
   new Function('require','module','exports',bundled.outputFiles[0].text)(()=>({ItemView}),module,module.exports);
-  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return '已保存';},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args])};
+  const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return '已保存';},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
+    summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
   return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
 const selected=snapshot('a.md','A compelling argument.','compelling');
@@ -51,6 +53,23 @@ test('long selection stays blank until chosen action, then displays aligned bili
   view.render(long,{translation:'第一。\n\n第二。',paragraphs:[{source:'First.',start:0,end:6,translation:'第一。'},{source:'Second.',start:8,end:15,translation:'第二。'}]});
   const pairs=document.querySelectorAll('.note-digest-paragraph');assert.equal(pairs.length,2);assert.ok(pairs[0].textContent!.startsWith('First.第一。'));assert.ok(pairs[1].textContent!.startsWith('Second.第二。'));
   view.render(long,{translation:'',summary:'摘要内容'},'','summarize');assert.ok(document.body.textContent!.includes('摘要内容'));assert.equal(document.querySelector('.note-digest-save'),null);
+});
+
+test('full summary is reachable without selecting text and partial results offer stop, locate and resume', () => {
+  const {view, document, calls} = setup();
+  const button = (text: string) => [...document.querySelectorAll('button')].find(button => button.textContent === text)!;
+  view.render();
+  assert.equal(calls.length, 0);
+  button('总结全文').click();
+  const article = {...planArticleSummary('Clippings/Long Essay.md', '# First\nOne.\n# Second\nTwo.'), sections: [{title: '<img src=x>', summary: '第一节内容'}]};
+  view.renderArticleSummary(article.path, article, '正在总结第 2/2 节…', true);
+  assert.match(document.body.textContent!, /部分摘要 · 已完成 1\/2 节/);
+  assert.ok(!document.querySelector('img, .note-digest-save'));
+  assert.ok(!document.body.textContent!.includes('全文概览'));
+  button('定位原文').click();
+  button('停止摘要').click();
+  button('继续摘要').click();
+  assert.deepEqual(calls, [['summarize', undefined], ['locate', article, article.parts[0]], ['stop'], ['summarize', article]]);
 });
 
 

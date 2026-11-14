@@ -1,9 +1,9 @@
 {
   "id": "note-digest",
   "name": "Note Digest",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "minAppVersion": "1.11.5",
-  "description": "Read English Markdown with Chinese translation and contextual explanations.",
+  "description": "Read English Markdown with Chinese translation, contextual explanations, and article summaries.",
   "author": "茉白 Jasmine",
   "isDesktopOnly": true
 }
