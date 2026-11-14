@@ -17,9 +17,14 @@ Assess the selected expression as used in its sentence. Distinguish definite spe
 explanation is a nonempty Chinese explanation grounded in the supplied context; identify the offending text and why when there is an error. Do not mistake informal language, quotation, dialect, or style preference for an error. Do not critique unrelated surrounding sentences.
 correction must be a minimal corrected English expression or sentence for incorrect/unnatural; may offer a more formal equivalent for informal, explicitly as an alternative, not an error correction; must be null for natural/uncertain. Do not silently replace the original selected text or translate only a corrected form. Explain original intent and the correction separately.
 usage should cover relevant patterns and collocations with context-appropriate examples, clearly separating contextual meaning from other possible senses. example contains English and Chinese. These are AI suggestions, not authoritative judgments.` : '';
-  const task = action === 'summarize' ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.' : 'Translate only selected text.';
+  const task = action === 'summarize'
+    ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.'
+    : 'The "translation" field must be a Simplified Chinese equivalent of the exact text in "selected". Use "context" only to choose the intended sense and wording for this field. If "selected" is a word or phrase, give a word or phrase equivalent. Never translate the surrounding sentence or heading, or add subjects, objects, actions, or claims that come only from "context". For example, with selected "grip" in "The firm’s grip on the market weakens", translation is "牢牢控制".';
+  const meaningRule = action === 'explain'
+    ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the selection.'
+    : '';
   return requestJson(key, requestUrl, languageInstruction('en') +
-    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + explanationRules,
+    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules,
     {selected: selection.text, context: selection.context}, value => validateResult(value, action));
 }
 
