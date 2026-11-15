@@ -38,7 +38,7 @@ export default class NoteDigestPlugin extends Plugin {
       if (!/^[dn]$/i.test(event.key)) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
-      const sidebar = this.readSidebarSelection(selection);
+      const sidebar = this.readSidebarSelection(selection, false);
       const target = event.target instanceof Element ? event.target : null;
       const action = readingShortcut(event, {
         reading: !!sidebar || view?.getMode() === 'preview',
@@ -48,7 +48,7 @@ export default class NoteDigestPlugin extends Plugin {
       });
       if (!action || (sidebar && action === 'quote')) return;
       event.preventDefault(); event.stopPropagation(); this.removeSelectionButton();
-      void this.capture(action, sidebar);
+      void this.capture(action);
     });
     this.registerDomEvent(document, 'mouseup', event => {
       if (this.selectionButton?.contains(event.target as Node)) return;
@@ -56,7 +56,7 @@ export default class NoteDigestPlugin extends Plugin {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
       if (!selection || !selection.rangeCount) return;
-      if (!this.readSidebarSelection(selection) && (!view || !selection.toString().trim() || !selection.anchorNode || !selection.focusNode ||
+      if (!this.readSidebarSelection(selection, false) && (!view || !selection.toString().trim() || !selection.anchorNode || !selection.focusNode ||
           !view.contentEl.contains(selection.anchorNode) || !view.contentEl.contains(selection.focusNode))) return;
       const rect = selection.getRangeAt(0).getBoundingClientRect();
       const button = document.body.createEl('button', { text: 'Digest', cls: 'note-digest-selection' });
@@ -213,7 +213,7 @@ export default class NoteDigestPlugin extends Plugin {
       await (leaf ?? this.app.workspace.getLeaf(false)).openFile(file, {active: true, eState: {line}});
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法定位原文。'); }
   }
-  private readSidebarSelection(selection: Selection | null): SidebarSelection | undefined {
+  private readSidebarSelection(selection: Selection | null, includeContext = true): SidebarSelection | undefined {
     if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
     const {workspace} = this.app;
     let selected: SidebarSelection | undefined;
@@ -222,7 +222,7 @@ export default class NoteDigestPlugin extends Plugin {
       if (root !== workspace.leftSplit && root !== workspace.rightSplit) return;
       const {view} = leaf;
       if (view instanceof MarkdownView || view.getViewType() === VIEW_TYPE || view.containerEl.checkVisibility?.() === false) return;
-      const candidate = sidebarSelection(selection, view instanceof ItemView ? view.contentEl : view.containerEl);
+      const candidate = sidebarSelection(selection, view instanceof ItemView ? view.contentEl : view.containerEl, includeContext);
       if (candidate) {
         selected = candidate;
         return true;
@@ -267,10 +267,11 @@ export default class NoteDigestPlugin extends Plugin {
     const source = await this.app.vault.read(view.file);
     return readingSnapshot(path, source, text, rendered);
   }
-  private async capture(action: 'digest' | 'quote' = 'digest', sidebar = this.readSidebarSelection(window.getSelection())): Promise<void> {
+  private async capture(action: 'digest' | 'quote' = 'digest'): Promise<void> {
     if (action === 'quote' && this.quoteBusy) return;
     if (action === 'quote') this.quoteBusy = true;
     try {
+      const sidebar = this.readSidebarSelection(window.getSelection());
       if (sidebar && action === 'quote') throw new Error('侧栏选区仅支持临时 Digest。');
       if (sidebar && sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
       const previousGeneration = this.generation;

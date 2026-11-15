@@ -30,19 +30,53 @@ test('shortcuts do not intercept typing, modified hotkeys, held keys, IME or con
   assert.equal(readingShortcut({...event,key:'a'},state),null);
 });
 
-test('sidebar capture works with unrelated view markup and sends only the selected text', () => {
+test('sidebar capture uses generic view markup and keeps the exact selection separate from context', () => {
   const {window} = new JSDOM(`
     <article><p>Context: <em>gloss over</em> fits here.</p></article>
     <section><div class="widget-output">widget report</div></section>`);
   const contents = window.document.querySelectorAll<HTMLElement>('article, section');
   const selection = window.getSelection()!;
   const values = ['gloss over', 'widget report'];
+  const contexts = ['Context: gloss over fits here.', ''];
   for (const [index, content] of Array.from(contents).entries()) {
     const node = content.querySelector('em, .widget-output')!.firstChild!;
     selection.setBaseAndExtent(node, values[index].length, node, 0);
-    assert.deepEqual(sidebarSelection(selection, content), {sidebar:true, text:values[index], context:''});
+    assert.deepEqual(sidebarSelection(selection, content), {
+      sidebar:true, text:values[index], context:contexts[index], contextOffset:index === 0 ? 9 : 0,
+    });
+    assert.equal(sidebarSelection(selection, content, false)?.context, '');
     assert.equal(sidebarSelection(selection, contents[1 - index]), undefined);
   }
+});
+
+test('sidebar context is bounded around the actual occurrence and does not use neighboring blocks', () => {
+  const {window} = new JSDOM(`
+    <section>
+      <p>First occurrence: gloss over. Other paragraph.</p>
+      <p>${'s'.repeat(1300)} The report <em>glosses over</em> the problem. ${'t'.repeat(1300)}</p>
+      <p>Next paragraph.</p>
+    </section>`);
+  const content = window.document.querySelector('section')!;
+  const selection = window.getSelection()!;
+  selection.selectAllChildren(content.querySelector('em')!);
+  const snapshot = sidebarSelection(selection, content)!;
+  assert.equal(snapshot.text, 'glosses over');
+  assert.equal(snapshot.contextOffset, 1200);
+  assert.equal(snapshot.context.length, snapshot.text.length + 2400);
+  assert.match(snapshot.context, /The report glosses over the problem\./);
+  assert.doesNotMatch(snapshot.context, /First occurrence|Next paragraph/);
+});
+
+test('sidebar context does not include hidden content or controls', () => {
+  const {window} = new JSDOM(`
+    <section><div><span hidden>Hidden value</span><em>A compelling argument.</em><button>Copy</button></div></section>`);
+  const content = window.document.querySelector('section')!;
+  const node = content.querySelector('em')!.firstChild!;
+  const selection = window.getSelection()!;
+  selection.setBaseAndExtent(node, 2, node, 12);
+  const snapshot = sidebarSelection(selection, content)!;
+  assert.equal(snapshot.text, 'compelling');
+  assert.equal(snapshot.context, 'A compelling argument.');
 });
 
 test('sidebar capture rejects input, editable text, ranges across views and ranges enclosing an editor', () => {

@@ -129,10 +129,10 @@ test('an unresolved reading selection displays its translation without insert or
   assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
 });
 
-test('a sidebar selection can request an explanation without controls tied to an article', () => {
+test('sidebar explanation reuses the selected phrase and its captured context', () => {
   const {view, document, calls, plugin} = setup();
   plugin.collection.recordsFor = () => assert.fail('Sidebar selections have no article collection');
-  const selection = {sidebar:true, text:'A compelling argument.', context:''};
+  const selection = {sidebar:true, text:'compelling', context:'A compelling argument.', contextOffset:2};
   view.render(selection, {translation:'有说服力的'});
   assert.match(document.body.textContent!, /侧栏 · 临时选区/);
   assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
@@ -141,7 +141,7 @@ test('a sidebar selection can request an explanation without controls tied to an
   buttons.find(button => button.textContent === '语境解释')!.click();
   assert.deepEqual(calls, [['run', selection, 'explain']]);
   view.render(selection, explained);
-  assert.equal(document.querySelector('blockquote'), null);
+  assert.equal(document.querySelector('blockquote')?.textContent, selection.context);
 });
 
 test('duplicate saving shows one prominent message without paths', async () => {

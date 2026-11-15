@@ -2,6 +2,8 @@ import type { Anchor } from './anchors';
 import type { SidebarSelection } from './core';
 
 const editableControl = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], .cm-editor';
+const proseBlock = 'p, div, li, td, th, blockquote, dd, dt, figcaption, h1, h2, h3, h4, h5, h6, [role="paragraph"]';
+const contextLimit = 1200;
 
 export function isSelectionControl(element: Element | null): boolean {
   return !!element?.closest(`${editableControl}, button, .modal-container`);
@@ -11,20 +13,50 @@ function selectionElement(node: Node): Element | null {
   return node.nodeType === 1 ? node as Element : node.parentElement;
 }
 
-/** A sidebar selection is limited to explicitly selected text in one view. */
-export function sidebarSelection(selection: Selection, content: HTMLElement): SidebarSelection | undefined {
+/** Sidebar context comes from the same visible prose block or text node. */
+export function sidebarSelection(selection: Selection, content: HTMLElement, includeContext = true): SidebarSelection | undefined {
   if (selection.rangeCount !== 1 || selection.isCollapsed || !content.isConnected) return;
   const range = selection.getRangeAt(0);
   if (!content.contains(range.startContainer) || !content.contains(range.endContainer)) return;
-  if (isSelectionControl(selectionElement(range.startContainer)) || isSelectionControl(selectionElement(range.endContainer))) return;
+  const start = selectionElement(range.startContainer);
+  if (isSelectionControl(start) || isSelectionControl(selectionElement(range.endContainer))) return;
   const controls = selectionElement(range.commonAncestorContainer)?.querySelectorAll(editableControl) ?? [];
   if (Array.from(controls).some(control => range.intersectsNode(control))) return;
   const text = selection.toString();
-  if (text.trim()) return {sidebar: true, text, context: ''};
+  if (!text.trim()) return;
+  const captured: SidebarSelection = {sidebar: true, text, context: '', contextOffset: 0};
+  if (!includeContext) return captured;
+
+  let prefix = '';
+  let suffix = '';
+  const block = start?.closest<HTMLElement>(proseBlock);
+  if (block && block !== content && content.contains(block) && block.contains(range.endContainer) &&
+      !block.querySelector(`${proseBlock}, ${editableControl}, button, [hidden], [aria-hidden="true"]`) &&
+      hasVisibleText(block)) {
+    const before = range.cloneRange();
+    before.selectNodeContents(block);
+    before.setEnd(range.startContainer, range.startOffset);
+    const after = range.cloneRange();
+    after.selectNodeContents(block);
+    after.setStart(range.endContainer, range.endOffset);
+    prefix = before.toString().slice(-contextLimit);
+    suffix = after.toString().slice(0, contextLimit);
+  } else if (range.startContainer === range.endContainer && range.startContainer.nodeType === 3) {
+    const line = range.startContainer.textContent ?? '';
+    prefix = line.slice(Math.max(0, range.startOffset - contextLimit), range.startOffset);
+    suffix = line.slice(range.endOffset, range.endOffset + contextLimit);
+  }
+  if (prefix.trim() || suffix.trim()) return {...captured, context: prefix + text + suffix, contextOffset: prefix.length};
+  return captured;
+}
+
+function hasVisibleText(block: HTMLElement): boolean {
+  const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
+  return typeof block.innerText !== 'string' || normalize(block.innerText) === normalize(block.textContent ?? '');
 }
 
 /** Presentation context is shorter than the context supplied to the model. */
-export function shortContext(anchor: Anchor): string {
+export function shortContext(anchor: Pick<Anchor, 'block' | 'offset' | 'text'>): string {
   const sentences = [...new Intl.Segmenter('en', {granularity: 'sentence'}).segment(anchor.block)];
   const selectedEnd = anchor.offset + anchor.text.length;
   let first = sentences.findIndex(sentence => sentence.index + sentence.segment.length > anchor.offset);

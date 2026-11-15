@@ -79,6 +79,9 @@ export class DigestView extends ItemView {
         let context = article.text;
         try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
         el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
+      } else if ('sidebar' in selection && selection.context) {
+        const context = shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
+        el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
       }
       for (const [key,label] of [['meaning','语境含义'],['usage','用法'],['example','例句']] as const) {
         if (result[key]) { el.createEl('h3',{text:label}); el.createEl('p',{text:result[key],cls:'note-digest-result'}); }
