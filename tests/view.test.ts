@@ -129,6 +129,21 @@ test('an unresolved reading selection displays its translation without insert or
   assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
 });
 
+test('a Claudian selection can request an explanation without controls tied to an article', () => {
+  const {view, document, calls, plugin} = setup();
+  plugin.collection.recordsFor = () => assert.fail('Claudian has no article collection');
+  const selection = {sidebar:'Claudian', text:'compelling', context:'A compelling argument.', contextOffset:2};
+  view.render(selection, {translation:'有说服力的'});
+  assert.match(document.body.textContent!, /Claudian · 临时选区/);
+  assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
+  const buttons = [...document.querySelectorAll('button')];
+  assert.ok(buttons.every(button => button.textContent !== '总结全文'));
+  buttons.find(button => button.textContent === '语境解释')!.click();
+  assert.deepEqual(calls, [['run', selection, 'explain']]);
+  view.render(selection, explained);
+  assert.equal(document.querySelector('blockquote')?.textContent, selection.context);
+});
+
 test('duplicate saving shows one prominent message without paths', async () => {
   const {view,document,plugin}=setup();
   plugin.collect=async()=>({text:'本词已收藏',duplicate:true});

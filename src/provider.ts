@@ -1,13 +1,13 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import type { ArticleSummary, SectionSummary } from './article-summary';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
-import { validateResult, type Action, type DigestResult, type SelectionSnapshot, type SourceLanguage } from './core';
+import { validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
 
 export function languageInstruction(language: SourceLanguage): string {
   if (language !== 'en') throw new Error('日语将在第二版提供。');
   return 'Explain English in Simplified Chinese. Preserve the selected expression and interpret its actual context.';
 }
-export async function digest(selection: SelectionSnapshot, action: Action, key: string, requestUrl: Transport): Promise<DigestResult> {
+export async function digest(selection: Pick<DigestSelection, 'text' | 'context'>, action: Action, key: string, requestUrl: Transport): Promise<DigestResult> {
   const fields = action === 'explain'
     ? 'translation, meaning (contextual sense and uncertainty), usage (natural usage), example (English example and Chinese translation)'
     : action === 'summarize' ? 'summary (a concise Chinese overview and key points of the selected text, with no invented facts)' : 'translation';
@@ -98,7 +98,7 @@ export async function translateParagraphs(selection: SelectionSnapshot, key: str
   for (const part of parts) {
     if (!isCurrent()) throw new Error('操作已取消。');
     onProgress(paragraphs.length, parts.length);
-    const result = await digest({...selection, text: part.source, start: part.start, end: part.end}, 'translate', key, transport);
+    const result = await digest({text: part.source, context: selection.context}, 'translate', key, transport);
     if (!isCurrent()) throw new Error('操作已取消。');
     paragraphs.push({...part, translation: result.translation});
     if (paragraphs.reduce((sum, paragraph) => sum + paragraph.translation.length, 0) > 24000) throw new Error('译文过长，请缩短选区。');

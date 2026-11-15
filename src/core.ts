@@ -6,6 +6,10 @@ export type Action = 'translate' | 'explain' | 'summarize';
 export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string; readOnly?: true;
 }
+export interface SidebarSelection {
+  sidebar: 'Claudian'; text: string; context: string; contextOffset: number;
+}
+export type DigestSelection = SelectionSnapshot | SidebarSelection;
 export const ASSESSMENT_LABELS = {
   natural: '自然、规范', informal: '口语或非正式表达', unnatural: '可以理解，但不够自然',
   incorrect: '用词或语法有误', uncertain: '语境不足，无法确定',

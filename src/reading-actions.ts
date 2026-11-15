@@ -1,7 +1,32 @@
 import type { Anchor } from './anchors';
+import type { SidebarSelection } from './core';
+
+/** Capture one rendered answer block without including other turns or tool output. */
+export function claudianSelection(selection: Selection | null): SidebarSelection | undefined {
+  if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
+  const range = selection.getRangeAt(0);
+  const start = range.startContainer.nodeType === 1 ? range.startContainer as Element : range.startContainer.parentElement;
+  const block = start?.closest('.claudian-message-assistant .claudian-text-block');
+  if (!block?.contains(range.endContainer)) return;
+
+  const text = selection.toString();
+  if (!text.trim()) return;
+  const paragraph = start?.closest('p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6');
+  if (!paragraph || !block.contains(paragraph) || !paragraph.contains(range.endContainer)) {
+    return {sidebar: 'Claudian', text, context: text, contextOffset: 0};
+  }
+  const before = range.cloneRange();
+  before.selectNodeContents(paragraph);
+  before.setEnd(range.startContainer, range.startOffset);
+  const after = range.cloneRange();
+  after.selectNodeContents(paragraph);
+  after.setStart(range.endContainer, range.endOffset);
+  const prefix = before.toString().slice(-1200);
+  return {sidebar: 'Claudian', text, context: prefix + text + after.toString().slice(0, 1200), contextOffset: prefix.length};
+}
 
 /** Presentation context is shorter than the context supplied to the model. */
-export function shortContext(anchor: Anchor): string {
+export function shortContext(anchor: Pick<Anchor, 'block' | 'offset' | 'text'>): string {
   const sentences = [...new Intl.Segmenter('en', {granularity: 'sentence'}).segment(anchor.block)];
   const selectedEnd = anchor.offset + anchor.text.length;
   let first = sentences.findIndex(sentence => sentence.index + sentence.segment.length > anchor.offset);

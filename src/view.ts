@@ -5,7 +5,7 @@ import type { Kind, SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
-import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type SelectionSnapshot } from './core';
+import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -26,13 +26,13 @@ export class DigestView extends ItemView {
     const button = parent.createEl('button', {text});
     button.onclick = () => { void this.plugin.summarizeCurrentArticle(previous); };
   }
-  render(selection?: SelectionSnapshot, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
+  render(selection?: DigestSelection, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
     const el = this.startRender();
     const revision = this.renderRevision;
     const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
     if (!selection) {
       this.summaryButton(actions);
-      el.createEl('p', {text: '在文章中选择英文，再点击 Digest 或按 D。'});
+      el.createEl('p', {text: '在文章或 Claudian 回答中选择英文，再点击 Digest 或按 D。'});
       const path = this.app.workspace.getActiveFile()?.path; if (path) this.renderCollection(path); return;
     }
     const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
@@ -41,7 +41,9 @@ export class DigestView extends ItemView {
       const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(action===mode)}});
       button.onclick = () => { void this.plugin.run(selection, action); };
     }
-    this.summaryButton(actions);
+    const article = 'path' in selection ? selection : undefined;
+    if (article) this.summaryButton(actions);
+    if ('sidebar' in selection) el.createEl('p', {text: `${selection.sidebar} · 临时选区`, cls:'note-digest-muted'});
     if (mode === 'idle') {
       el.createEl('p', {text:'已选中长段落。请选择 Summarize、翻译或语境解释。',cls:'note-digest-muted'}); return;
     }
@@ -56,13 +58,15 @@ export class DigestView extends ItemView {
       return;
     }
     if (mode === 'translate') {
-      const paragraphs = result.paragraphs ?? [{source:selection.text,start:selection.start,end:selection.end,translation:result.translation}];
+      const paragraphs = result.paragraphs ?? [{source:selection.text,translation:result.translation}];
       for (const paragraph of paragraphs) {
         const pair = el.createDiv({cls:'note-digest-paragraph'});
         pair.createEl('p',{text:paragraph.source,cls:'note-digest-original'});
         pair.createEl('p',{text:paragraph.translation,cls:'note-digest-result'});
-        this.renderInsertButtons(pair,{...selection,text:paragraph.source,start:paragraph.start,end:paragraph.end},paragraph.translation,revision,receipt=>{
-          const updated=rebaseSelectionAfterInsertion(selection,receipt);
+        if (!article) continue;
+        const insertRange = 'start' in paragraph ? {...article,text:paragraph.source,start:paragraph.start,end:paragraph.end} : article;
+        this.renderInsertButtons(pair,insertRange,paragraph.translation,revision,receipt=>{
+          const updated=rebaseSelectionAfterInsertion(article,receipt);
           if(updated) this.render(updated,result,'译文已添加，可以直接继续语境解释。',mode);
           else this.render(selection,result,'译文已添加；此多段选区包含新插入内容，请重新选择后继续。',mode);
         });
@@ -72,7 +76,11 @@ export class DigestView extends ItemView {
       el.createEl('p',{text:result.pronunciation ?? '音标：不适用或无法可靠确定',cls:'note-digest-muted'});
       el.createEl('p',{text:result.translation,cls:'note-digest-result'});
       let context = selection.text;
-      try { context = shortContext(makeAnchor(selection.source,selection.start,selection.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+      if ('sidebar' in selection) {
+        context = shortContext({block: selection.context, offset: selection.contextOffset, text: selection.text});
+      } else {
+        try { context = shortContext(makeAnchor(selection.source,selection.start,selection.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+      }
       el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
       for (const [key,label] of [['meaning','语境含义'],['usage','用法'],['example','例句']] as const) {
         if (result[key]) { el.createEl('h3',{text:label}); el.createEl('p',{text:result[key],cls:'note-digest-result'}); }
@@ -85,8 +93,10 @@ export class DigestView extends ItemView {
         }
       }
     }
-    if (canCollectSelection(selection)) this.renderSave(selection,result,mode);
-    this.renderCollection(selection.path);
+    if (article) {
+      if (canCollectSelection(article)) this.renderSave(article,result,mode);
+      this.renderCollection(article.path);
+    }
   }
   renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
     const el = this.startRender();

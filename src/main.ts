@@ -1,5 +1,5 @@
 import { MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
-import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type InsertionReceipt, type SelectionSnapshot, type Action } from './core';
+import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type Action } from './core';
 import { digest, summarizeArticle, translateParagraphs } from './provider';
 import { planArticleSummary, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection } from './reading-layout';
@@ -10,7 +10,7 @@ import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
 import { locateAnchor } from './anchors';
 import type { DigestResult } from './core';
-import { readingShortcut } from './reading-actions';
+import { claudianSelection, readingShortcut } from './reading-actions';
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
@@ -37,14 +37,15 @@ export default class NoteDigestPlugin extends Plugin {
     this.registerDomEvent(document, 'keydown', event => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
+      const sidebar = claudianSelection(selection);
       const target = event.target instanceof Element ? event.target : null;
       const action = readingShortcut(event, {
-        reading: view?.getMode() === 'preview',
-        selectionInside: !!(view && selection?.toString().trim() && selection.anchorNode && selection.focusNode &&
+        reading: !!sidebar || view?.getMode() === 'preview',
+        selectionInside: !!sidebar || !!(view && selection?.toString().trim() && selection.anchorNode && selection.focusNode &&
           view.contentEl.contains(selection.anchorNode) && view.contentEl.contains(selection.focusNode)),
         editable: !!target?.closest('input, textarea, select, button, [contenteditable]:not([contenteditable="false"]), [role="textbox"], .modal-container') || !!document.querySelector('.modal-container'),
       });
-      if (!action) return;
+      if (!action || (sidebar && action === 'quote')) return;
       event.preventDefault(); event.stopPropagation(); this.removeSelectionButton();
       void this.capture(action);
     });
@@ -53,8 +54,9 @@ export default class NoteDigestPlugin extends Plugin {
       this.removeSelectionButton();
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
-      if (!view || !selection?.toString().trim() || !selection.anchorNode || !selection.focusNode ||
-          !view.contentEl.contains(selection.anchorNode) || !view.contentEl.contains(selection.focusNode)) return;
+      if (!selection || !selection.rangeCount) return;
+      if (!claudianSelection(selection) && (!view || !selection.toString().trim() || !selection.anchorNode || !selection.focusNode ||
+          !view.contentEl.contains(selection.anchorNode) || !view.contentEl.contains(selection.focusNode))) return;
       const rect = selection.getRangeAt(0).getBoundingClientRect();
       const button = document.body.createEl('button', { text: 'Digest', cls: 'note-digest-selection' });
       button.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 100)) + 'px';
@@ -133,11 +135,9 @@ export default class NoteDigestPlugin extends Plugin {
   }
   private removeSelectionButton(): void { this.selectionButton?.remove(); this.selectionButton = undefined; }
   async openPanel(): Promise<DigestView> {
-    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0] ?? this.app.workspace.getRightLeaf(false);
-    if (!leaf) throw new Error('无法打开右侧栏。');
-    if (!(leaf.view instanceof DigestView)) await leaf.setViewState({ type: VIEW_TYPE, active: false });
-    await this.app.workspace.revealLeaf(leaf);
-    return leaf.view as DigestView;
+    const leaf = await this.app.workspace.ensureSideLeaf(VIEW_TYPE, 'right', {active: false});
+    if (!(leaf?.view instanceof DigestView)) throw new Error('无法打开右侧栏。');
+    return leaf.view;
   }
   stopArticleSummary(): void {
     if (this.summaryJob?.generation === this.generation) this.summaryJob.cancelled = true;
@@ -212,76 +212,87 @@ export default class NoteDigestPlugin extends Plugin {
       await (leaf ?? this.app.workspace.getLeaf(false)).openFile(file, {active: true, eState: {line}});
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法定位原文。'); }
   }
+  private async readArticleSelection(): Promise<SelectionSnapshot> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view?.file) throw new Error('请在 Markdown 文章或 Claudian 回答中选择英文。');
+    const path = view.file.path;
+    if (this.collection.isLearningNote(path)) throw new Error('请从原文章选择内容。');
+    const range = window.getSelection();
+    const inside = range?.anchorNode && range.focusNode &&
+      view.contentEl.contains(range.anchorNode) && view.contentEl.contains(range.focusNode);
+    if (range?.toString().trim() && !inside) throw new Error('请在同一段 Claudian 回答或 Markdown 原文中选择英文。');
+    if (view.getMode() === 'source') {
+      return snapshot(path, view.editor.getValue(), view.editor.getSelection(), view.editor.posToOffset(view.editor.getCursor('from')));
+    }
+    if (!inside || !range?.rangeCount) throw new Error('请在原文中选择英文。');
+    const text = range.toString();
+    const nativeRange = range.getRangeAt(0).cloneRange();
+    const parent = nativeRange.startContainer.nodeType === 1 ? nativeRange.startContainer as Element : nativeRange.startContainer.parentElement;
+    const paragraph = parent?.closest('p');
+    let sectionElement: HTMLElement | null = paragraph ?? null;
+    while (sectionElement && !this.renderedSections.has(sectionElement)) sectionElement = sectionElement.parentElement;
+    const section = sectionElement ? this.renderedSections.get(sectionElement) : undefined;
+    let rendered: Parameters<typeof readingSnapshot>[3];
+    if (paragraph && sectionElement && section?.path === path &&
+        !paragraph.closest('.internal-embed, .markdown-embed, blockquote, li, table') && paragraph.contains(nativeRange.endContainer)) {
+      const paragraphText = paragraph.textContent ?? '';
+      const normalizedParagraph = paragraphText.replace(/[ \t\r\n]+/g, ' ');
+      const matching = Array.from(sectionElement.querySelectorAll('p'))
+        .filter(other => other.textContent?.replace(/[ \t\r\n]+/g, ' ') === normalizedParagraph);
+      if (sectionElement === paragraph || (matching.length === 1 && matching[0] === paragraph)) {
+        const prefix = nativeRange.cloneRange();
+        prefix.selectNodeContents(paragraph);
+        prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset);
+        rendered = {section, paragraph: paragraphText, offset: prefix.toString().length};
+      }
+    }
+    const source = await this.app.vault.read(view.file);
+    return readingSnapshot(path, source, text, rendered);
+  }
   private async capture(action: 'digest' | 'quote' = 'digest'): Promise<void> {
     if (action === 'quote' && this.quoteBusy) return;
     if (action === 'quote') this.quoteBusy = true;
     try {
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (!view?.file) throw new Error('请先打开 Markdown 文章并选中英文。');
-      const path = view.file.path;
-      if (this.collection.isLearningNote(path)) throw new Error('请从原文章选择内容。');
-      let selected: SelectionSnapshot;
-      if (view.getMode() === 'source') {
-        selected = snapshot(path, view.editor.getValue(), view.editor.getSelection(), view.editor.posToOffset(view.editor.getCursor('from')));
-      } else {
-        const range = window.getSelection();
-        if (!range?.anchorNode || !range.focusNode || !view.contentEl.contains(range.anchorNode) || !view.contentEl.contains(range.focusNode)) throw new Error('请在原文中选择英文。');
-        const text = range.toString();
-        const nativeRange = range.getRangeAt(0).cloneRange();
-        const parent = nativeRange.startContainer.nodeType === 1 ? nativeRange.startContainer as Element : nativeRange.startContainer.parentElement;
-        const paragraph = parent?.closest('p');
-        let sectionElement: HTMLElement | null = paragraph ?? null;
-        while (sectionElement && !this.renderedSections.has(sectionElement)) sectionElement = sectionElement.parentElement;
-        const section = sectionElement ? this.renderedSections.get(sectionElement) : undefined;
-        let rendered: Parameters<typeof readingSnapshot>[3];
-        if (paragraph && sectionElement && section?.path === path &&
-            !paragraph.closest('.internal-embed, .markdown-embed, blockquote, li, table') && paragraph.contains(nativeRange.endContainer)) {
-          const paragraphText = paragraph.textContent ?? '';
-          const normalizedParagraph = paragraphText.replace(/[ \t\r\n]+/g, ' ');
-          const matching = Array.from(sectionElement.querySelectorAll('p'))
-            .filter(other => other.textContent?.replace(/[ \t\r\n]+/g, ' ') === normalizedParagraph);
-          if (sectionElement === paragraph || (matching.length === 1 && matching[0] === paragraph)) {
-            const prefix = nativeRange.cloneRange();
-            prefix.selectNodeContents(paragraph);
-            prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset);
-            rendered = {section, paragraph: paragraphText, offset: prefix.toString().length};
-          }
-        }
-        const source = await this.app.vault.read(view.file);
-        selected = readingSnapshot(path, source, text, rendered);
-      }
+      const sidebar = claudianSelection(window.getSelection());
+      if (sidebar && action === 'quote') throw new Error('Claudian 回答仅支持临时 Digest。');
+      if (sidebar && sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
+      const previousGeneration = this.generation;
+      const selected = sidebar ?? await this.readArticleSelection();
+      if (this.stopped || previousGeneration !== this.generation) return;
       if (action === 'digest' && isLongSelection(selected.text)) {
         const generation = ++this.generation; const panel = await this.openPanel();
         if (generation === this.generation && !this.stopped) panel.render(selected,undefined,'','idle');
         return;
       }
-      if (action === 'quote' && !canCollectSelection(selected)) new Notice('无法确认原文位置，译文仅显示在侧栏。');
+      const quote = action === 'quote' && 'path' in selected && canCollectSelection(selected) ? selected : undefined;
+      if (action === 'quote' && !quote) new Notice('无法确认原文位置，译文仅显示在侧栏。');
       const requestGeneration = this.generation + 1;
       const result = await this.run(selected, 'translate');
-      if (action === 'quote' && canCollectSelection(selected) && result && requestGeneration === this.generation && !this.stopped) {
-        const {text: status} = await this.collect(selected, result, 'quote', 'both');
+      if (quote && result && requestGeneration === this.generation && !this.stopped) {
+        const {text: status} = await this.collect(quote, result, 'quote', 'both');
         new Notice(status);
         if (requestGeneration === this.generation && !this.stopped) (await this.openPanel()).render(selected, result, status);
       }
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
     finally { if (action === 'quote') this.quoteBusy = false; }
   }
-  async run(selection: SelectionSnapshot, action: Action): Promise<DigestResult | undefined> {
+  async run(selection: DigestSelection, action: Action): Promise<DigestResult | undefined> {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
     panel.render(selection, undefined, '正在请求…', action);
     try {
-      const file = this.app.vault.getAbstractFileByPath(selection.path);
-      if (!(file instanceof TFile) || await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
+      const article = 'path' in selection ? selection : undefined;
+      const file = article ? this.app.vault.getFileByPath(article.path) : null;
+      if (article && (!file || await this.app.vault.read(file) !== article.source)) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      const result = action === 'translate' && !selection.readOnly && isLongSelection(selection.text) && canCollectSelection(selection)
-        ? await translateParagraphs(selection,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,
+      const result = article && action === 'translate' && isLongSelection(article.text) && canCollectSelection(article)
+        ? await translateParagraphs(article,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,
           (done,total)=>{ if(generation===this.generation) panel.render(selection,undefined,`正在翻译 ${done}/${total} 段…`,action); })
         : await digest(selection, action, key ?? '', requestUrl);
       if (generation !== this.generation) return;
-      if (await this.app.vault.read(file) !== selection.source) throw new Error('原文已修改，请重新选择。');
+      if (article && file && await this.app.vault.read(file) !== article.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
       panel.render(selection, result, '', action);
       return result;
