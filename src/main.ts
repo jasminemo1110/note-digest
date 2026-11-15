@@ -272,7 +272,7 @@ export default class NoteDigestPlugin extends Plugin {
     if (action === 'quote') this.quoteBusy = true;
     try {
       const sidebar = this.readSidebarSelection(window.getSelection());
-      if (sidebar && action === 'quote') throw new Error('侧栏选区仅支持临时 Digest。');
+      if (sidebar && action === 'quote') throw new Error('侧栏词语可在「语境解释」中收藏到独立学习笔记。');
       if (sidebar && sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
       const previousGeneration = this.generation;
       const selected = sidebar ?? await this.readArticleSelection();

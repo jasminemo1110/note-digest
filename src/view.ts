@@ -1,11 +1,11 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import type { ArticleSummary } from './article-summary';
-import type { Kind, SaveTarget } from './collection';
+import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
-import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot } from './core';
+import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -97,7 +97,34 @@ export class DigestView extends ItemView {
     if (article) {
       if (canCollectSelection(article)) this.renderSave(article,result,mode);
       this.renderCollection(article.path);
+    } else if ('sidebar' in selection && mode === 'explain') {
+      this.renderSidebarSave(selection, result);
     }
+  }
+  private renderSidebarSave(selection: SidebarSelection, result: DigestResult): void {
+    const section = this.contentEl.createDiv({cls:'note-digest-save'});
+    const actions = section.createDiv({cls:'note-digest-actions'});
+    const save = actions.createEl('button', {text:'收藏到独立学习笔记', cls:'mod-cta'});
+    let open: HTMLButtonElement | undefined;
+    const status = section.createEl('p', {cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
+    save.onclick = async () => {
+      save.disabled = true;
+      status.textContent = '正在收藏…';
+      status.classList.remove('note-digest-save-duplicate');
+      try {
+        const feedback = await this.plugin.collection.saveSidebarWord(selection, result);
+        status.textContent = feedback.text;
+        status.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
+        if (!open) {
+          open = actions.createEl('button', {text:'打开侧栏学习笔记'});
+          open.onclick = () => { void this.app.workspace.openLinkText(SIDEBAR_NOTE_PATH, '', false); };
+        }
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : '收藏失败，请重试。';
+      } finally {
+        save.disabled = false;
+      }
+    };
   }
   renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
     const el = this.startRender();

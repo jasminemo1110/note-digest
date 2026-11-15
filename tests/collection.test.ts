@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, type CollectionData, type StoragePort } from '../src/collection';
+import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, SIDEBAR_NOTE_PATH, type CollectionData, type StoragePort } from '../src/collection';
 import { snapshot, type DigestResult } from '../src/core';
 import { articleBody, locateAnchor, LEARNING_BOUNDARY } from '../src/anchors';
 const source = '# Article\n\nA compelling argument.\n\nA compelling story.';
@@ -19,6 +19,59 @@ function fixture(initial?: CollectionData) {
   return {files, store, port, durable: () => durable, fail: (value: string) => failPath=value, failPersist:(value:boolean) => persistFails=value};
 }
 const select = () => snapshot(path, source, 'compelling', source.indexOf('compelling'));
+const sidebarWord = (context: string, contextOffset = context.indexOf('compelling')) =>
+  ({sidebar:true as const, text:'compelling', context, contextOffset});
+
+test('sidebar lookup saves the exact source sentence and complete word card in its own note only', async () => {
+  const f = fixture();
+  const context = 'A compelling story. The editor needs a compelling argument. Read the whole paragraph.';
+  const saved = await f.store.saveSidebarWord(sidebarWord(context, context.lastIndexOf('compelling')), result);
+  assert.equal(saved.duplicate, false);
+  assert.deepEqual([...f.files.keys()], [path, SIDEBAR_NOTE_PATH]);
+  assert.equal(f.files.get(path), source);
+  assert.deepEqual(f.durable(), loadCollection(null));
+  assert.equal(f.store.isLearningNote(SIDEBAR_NOTE_PATH), true);
+  const note = f.files.get(SIDEBAR_NOTE_PATH)!;
+  assert.match(note, /#### compelling\n/);
+  assert.ok(note.includes('The editor needs a compelling argument\\.'));
+  assert.doesNotMatch(note, /A compelling story|Read the whole paragraph/);
+  for (const field of ['音标','有说服力的','语境含义','用法','例句','另一个搭配']) assert.ok(note.includes(field));
+});
+
+test('sidebar saves deduplicate across restarts, keep distinct sentences and preserve edits', async () => {
+  const f = fixture();
+  const same = sidebarWord('A compelling argument.');
+  await f.store.saveSidebarWord(same, result);
+  const edited = f.files.get(SIDEBAR_NOTE_PATH)!.replace('有说服力的', '我的译文') + '\n我的备注\n';
+  f.files.set(SIDEBAR_NOTE_PATH, edited);
+  const restarted = new CollectionStore(loadCollection(f.durable()), f.port);
+  const outcomes = await Promise.all([
+    restarted.saveSidebarWord(sidebarWord('Introduction. A compelling argument. Closing thoughts.'), {...result, translation:'另一版译文'}),
+    restarted.saveSidebarWord(same, result),
+  ]);
+  assert.ok(outcomes.every(saved => saved.duplicate));
+  assert.equal(f.files.get(SIDEBAR_NOTE_PATH), edited);
+  await restarted.saveSidebarWord(sidebarWord('A compelling story.'), result);
+  const note = f.files.get(SIDEBAR_NOTE_PATH)!;
+  assert.equal((note.match(/#### compelling/g) ?? []).length, 2);
+  assert.ok(note.includes('我的译文') && note.endsWith('我的备注\n'));
+});
+
+test('sidebar saves validate explanations, reject a foreign note and allow retry after failure', async () => {
+  const f = fixture();
+  const withoutContext = sidebarWord('', 0);
+  await assert.rejects(f.store.saveSidebarWord(withoutContext, {translation:'单独译文'}));
+  assert.equal(f.files.has(SIDEBAR_NOTE_PATH), false);
+  f.files.set(SIDEBAR_NOTE_PATH, '# 用户自己的笔记\n');
+  await assert.rejects(f.store.saveSidebarWord(withoutContext, result), /同名文件/);
+  assert.equal(f.files.get(SIDEBAR_NOTE_PATH), '# 用户自己的笔记\n');
+  f.files.delete(SIDEBAR_NOTE_PATH);
+  f.fail(SIDEBAR_NOTE_PATH);
+  await assert.rejects(f.store.saveSidebarWord(withoutContext, result), /模拟磁盘失败/);
+  f.fail('');
+  await f.store.saveSidebarWord(withoutContext, result);
+  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!, /原始语境\*\*\n\n> compelling\n/);
+});
 
 test('both targets retain full explanation, source body and saved identity', async () => {
   const f=fixture(); const saved=await f.store.save(select(),result,'word','both');

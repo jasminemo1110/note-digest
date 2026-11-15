@@ -129,9 +129,15 @@ test('an unresolved reading selection displays its translation without insert or
   assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
 });
 
-test('sidebar explanation reuses the selected phrase and its captured context', () => {
+test('sidebar explanation reuses the captured context and saves only after clicking its notebook action', async () => {
   const {view, document, calls, plugin} = setup();
   plugin.collection.recordsFor = () => assert.fail('Sidebar selections have no article collection');
+  Object.assign(plugin.collection, {
+    saveSidebarWord: async (...args: any[]) => {
+      calls.push(['saveSidebarWord', ...args]);
+      return {text:'已收藏到侧栏学习笔记', duplicate:false};
+    },
+  });
   const selection = {sidebar:true, text:'compelling', context:'A compelling argument.', contextOffset:2};
   view.render(selection, {translation:'有说服力的'});
   assert.match(document.body.textContent!, /侧栏 · 临时选区/);
@@ -142,6 +148,13 @@ test('sidebar explanation reuses the selected phrase and its captured context', 
   assert.deepEqual(calls, [['run', selection, 'explain']]);
   view.render(selection, explained);
   assert.equal(document.querySelector('blockquote')?.textContent, selection.context);
+  assert.equal(document.querySelector('.note-digest-insert, select'), null);
+  assert.equal(calls.length, 1);
+  const save = Array.from(document.querySelectorAll('.note-digest-save button')).find(button => button.textContent === '收藏到独立学习笔记') as HTMLButtonElement;
+  await save.onclick!(new (domEvent(document))('click') as any);
+  assert.deepEqual(calls[1], ['saveSidebarWord', selection, explained]);
+  assert.match(document.querySelector('.note-digest-save [role="status"]')!.textContent!, /已收藏到侧栏学习笔记/);
+  assert.ok(document.body.textContent!.includes('打开侧栏学习笔记'));
 });
 
 test('duplicate saving shows one prominent message without paths', async () => {
