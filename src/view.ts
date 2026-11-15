@@ -32,7 +32,7 @@ export class DigestView extends ItemView {
     const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
     if (!selection) {
       this.summaryButton(actions);
-      el.createEl('p', {text: '在文章或 Claudian 回答中选择英文，再点击 Digest 或按 D。'});
+      el.createEl('p', {text: '在文章或侧栏中选择英文，再点击 Digest 或按 D。'});
       const path = this.app.workspace.getActiveFile()?.path; if (path) this.renderCollection(path); return;
     }
     const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
@@ -43,7 +43,7 @@ export class DigestView extends ItemView {
     }
     const article = 'path' in selection ? selection : undefined;
     if (article) this.summaryButton(actions);
-    if ('sidebar' in selection) el.createEl('p', {text: `${selection.sidebar} · 临时选区`, cls:'note-digest-muted'});
+    if (!article) el.createEl('p', {text: '侧栏 · 临时选区', cls:'note-digest-muted'});
     if (mode === 'idle') {
       el.createEl('p', {text:'已选中长段落。请选择 Summarize、翻译或语境解释。',cls:'note-digest-muted'}); return;
     }
@@ -75,13 +75,11 @@ export class DigestView extends ItemView {
       el.createEl('h3',{text:selection.text,cls:'note-digest-original'});
       el.createEl('p',{text:result.pronunciation ?? '音标：不适用或无法可靠确定',cls:'note-digest-muted'});
       el.createEl('p',{text:result.translation,cls:'note-digest-result'});
-      let context = selection.text;
-      if ('sidebar' in selection) {
-        context = shortContext({block: selection.context, offset: selection.contextOffset, text: selection.text});
-      } else {
-        try { context = shortContext(makeAnchor(selection.source,selection.start,selection.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+      if (article) {
+        let context = article.text;
+        try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+        el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
       }
-      el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
       for (const [key,label] of [['meaning','语境含义'],['usage','用法'],['example','例句']] as const) {
         if (result[key]) { el.createEl('h3',{text:label}); el.createEl('p',{text:result[key],cls:'note-digest-result'}); }
       }

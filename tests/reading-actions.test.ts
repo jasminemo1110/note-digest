@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
-import {claudianSelection, readingShortcut, shortContext} from '../src/reading-actions';
+import {sidebarSelection, readingShortcut, shortContext} from '../src/reading-actions';
 import {makeAnchor} from '../src/anchors';
 
 test('display context stays in selected paragraph and includes at most two nearby sentences',()=>{
@@ -30,38 +30,35 @@ test('shortcuts do not intercept typing, modified hotkeys, held keys, IME or con
   assert.equal(readingShortcut({...event,key:'a'},state),null);
 });
 
-test('a backwards selection in a Claudian answer uses the selected occurrence and bounded same-paragraph context', () => {
+test('sidebar capture works with unrelated view markup and sends only the selected text', () => {
   const {window} = new JSDOM(`
-    <div class="claudian-message-user">Unrelated prompt</div>
-    <div class="claudian-message-assistant">
-      <div class="claudian-text-block"><p>Outside this paragraph.</p>
-        <p>${'A'.repeat(1300)} Today, <em>gloss over</em> fits here. ${'B'.repeat(1300)}</p>
-      </div>
-    </div>`);
-  const node = window.document.querySelector('em')!.firstChild!;
+    <article><p>Context: <em>gloss over</em> fits here.</p></article>
+    <section><div class="widget-output">widget report</div></section>`);
+  const contents = window.document.querySelectorAll<HTMLElement>('article, section');
   const selection = window.getSelection()!;
-  selection.setBaseAndExtent(node, 10, node, 0);
-  const captured = claudianSelection(selection)!;
-  assert.equal(captured.sidebar, 'Claudian');
-  assert.equal(captured.text, 'gloss over');
-  assert.equal(captured.contextOffset, 1200);
-  assert.equal(captured.context.length, 2410);
-  assert.match(captured.context, /Today, gloss over fits here\./);
-  assert.doesNotMatch(captured.context, /Unrelated prompt|Outside this paragraph/);
+  const values = ['gloss over', 'widget report'];
+  for (const [index, content] of Array.from(contents).entries()) {
+    const node = content.querySelector('em, .widget-output')!.firstChild!;
+    selection.setBaseAndExtent(node, values[index].length, node, 0);
+    assert.deepEqual(sidebarSelection(selection, content), {sidebar:true, text:values[index], context:''});
+    assert.equal(sidebarSelection(selection, contents[1 - index]), undefined);
+  }
 });
 
-test('Claudian selection excludes prompts, tool output and ranges crossing answer blocks', () => {
+test('sidebar capture rejects input, editable text, ranges across views and ranges enclosing an editor', () => {
   const {window} = new JSDOM(`
-    <div class="claudian-message-user"><p class="claudian-text-block" id="prompt">Question</p></div>
-    <div class="claudian-message-assistant">
-      <p class="claudian-text-block" id="first">Answer one</p>
-      <p id="tool">Tool output</p>
-      <p class="claudian-text-block" id="last">Answer two</p>
-    </div>`);
+    <section id="view">
+      <p id="first">First view</p>
+      <textarea id="input">Private</textarea>
+      <div contenteditable="true" id="editor">Editable</div>
+      <p id="last">Last paragraph</p>
+    </section>
+    <section id="other">Second view</section>`);
+  const content = window.document.getElementById('view')!;
   const text = (id: string) => window.document.getElementById(id)!.firstChild!;
   const selection = window.getSelection()!;
-  for (const [start, end] of [['prompt', 'prompt'], ['tool', 'tool'], ['first', 'last']]) {
+  for (const [start, end] of [['input', 'input'], ['editor', 'editor'], ['first', 'last'], ['first', 'other']]) {
     selection.setBaseAndExtent(text(start), 0, text(end), 6);
-    assert.equal(claudianSelection(selection), undefined);
+    assert.equal(sidebarSelection(selection, content), undefined);
   }
 });

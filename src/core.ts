@@ -7,7 +7,7 @@ export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string; readOnly?: true;
 }
 export interface SidebarSelection {
-  sidebar: 'Claudian'; text: string; context: string; contextOffset: number;
+  sidebar: true; text: string; context: '';
 }
 export type DigestSelection = SelectionSnapshot | SidebarSelection;
 export const ASSESSMENT_LABELS = {
