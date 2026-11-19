@@ -11,7 +11,7 @@ import { applyHighlights, clearHighlights, highlightRanges } from './highlights'
 import { locateAnchor } from './anchors';
 import type { DigestResult } from './core';
 import { isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
-import { CLAUDIAN_VIEW, insertExchange, readExchange, watchClaudian } from './claudian-callout';
+import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
@@ -160,8 +160,8 @@ export default class NoteDigestPlugin extends Plugin {
     }
     for (const {view} of leaves) {
       if (this.claudianPanes.has(view.containerEl)) continue;
-      const cleanup = watchClaudian(view.containerEl, message => {
-        void this.saveClaudianCallout(view, message);
+      const cleanup = watchClaudian(view.containerEl, (message, mode) => {
+        void this.saveClaudianCallout(view, message, mode);
       });
       this.claudianPanes.set(view.containerEl, cleanup);
     }
@@ -171,14 +171,17 @@ export default class NoteDigestPlugin extends Plugin {
     if (!view?.file || !(target instanceof Node) || !view.contentEl.contains(target)) return;
     this.calloutSource = {view, file: view.file, selection: this.readArticleSelection().catch(() => undefined)};
   }
-  private async saveClaudianCallout(view: object, message: HTMLElement): Promise<void> {
+  private async saveClaudianCallout(view: object, message: HTMLElement, mode: ClaudianSaveMode): Promise<void> {
     if (this.calloutBusy) return;
     this.calloutBusy = true;
+    const label = mode === 'exchange' ? '问答' : '答案';
     try {
       const anchor = this.calloutSource;
       if (!anchor) throw new Error('请先在原文中选中一句话。');
-      const exchange = readExchange(view, message);
-      if (!exchange) throw new Error('无法读取这轮完整问答。请确认回复已完成，并在对话中显示对应提问。');
+      const note = readClaudianNote(view, message, mode);
+      if (!note) throw new Error(mode === 'exchange'
+        ? '无法读取这轮完整问答。请确认回复已完成，并在对话中显示对应提问。'
+        : '无法读取这条答案。请确认回复已完成。');
       const selection = await anchor.selection;
       if (!selection || !canCollectSelection(selection)) throw new Error('请先在原文中选中可定位的一句话。');
       const {file} = anchor;
@@ -188,11 +191,11 @@ export default class NoteDigestPlugin extends Plugin {
         if (this.stopped || this.calloutSource !== anchor || current === null || file.path !== selection.path) {
           throw new Error('原文已切换，请重新选中原句。');
         }
-        return insertExchange(current, selection, exchange);
+        return insertClaudianCallout(current, selection, note);
       });
       if (this.calloutSource === anchor) this.calloutSource = undefined;
-      new Notice('已在原句下方插入折叠问答。');
-    } catch (error) { new Notice(error instanceof Error ? error.message : '写入问答失败。'); }
+      new Notice(`已在原句下方插入折叠${label}。`);
+    } catch (error) { new Notice(error instanceof Error ? error.message : `写入${label}失败。`); }
     finally { this.calloutBusy = false; }
   }
   async openPanel(): Promise<DigestView> {

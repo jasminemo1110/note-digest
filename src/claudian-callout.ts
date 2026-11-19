@@ -4,6 +4,11 @@ import { insertionTarget, markdownBody, markdownStructure } from './markdown-sou
 export const CLAUDIAN_VIEW = 'claudian-view';
 const saveButtonClass = 'note-digest-save-claudian';
 const responseSelector = '.claudian-message[data-role="assistant"][data-message-id]';
+const saveActions = [
+  ['exchange', '将问答存为原句批注'],
+  ['answer', '仅答案存为原句批注'],
+] as const;
+export type ClaudianSaveMode = typeof saveActions[number][0];
 
 interface ChatMessage {
   id: string;
@@ -21,7 +26,7 @@ interface ClaudianView {
   getActiveTab?(): {dom?: {messagesEl?: HTMLElement}; state?: {messages?: ChatMessage[]}} | null;
 }
 
-export interface Exchange { question: string; answer: string }
+export interface ClaudianNote { question?: string; answer: string }
 
 function responseActions(message: Element): Element | null {
   const actions = message.querySelector(':scope > .claudian-message-actions');
@@ -30,7 +35,7 @@ function responseActions(message: Element): Element | null {
 
 /** Claudian's public API only reads the latest reply. Match the clicked, finished
  * response to the active transcript of its own view using Claudian's message ID. */
-export function readExchange(view: object, message: HTMLElement): Exchange | undefined {
+export function readClaudianNote(view: object, message: HTMLElement, mode: ClaudianSaveMode): ClaudianNote | undefined {
   const tab = (view as ClaudianView).getActiveTab?.();
   if (!responseActions(message) || message.closest('.claudian-messages') !== tab?.dom?.messagesEl) return;
   const messages = tab?.state?.messages;
@@ -40,6 +45,16 @@ export function readExchange(view: object, message: HTMLElement): Exchange | und
   if (response?.role !== 'assistant' || response.isInterrupt || response.isAutomaticResponse) return;
   // An interrupted turn can have a response row before its interrupt marker.
   if (messages[index + 1]?.isInterrupt) return;
+  const blocks = response.contentBlocks;
+  let answer = response.content;
+  if (Array.isArray(blocks) && blocks.length) {
+    let start = blocks.length;
+    while (start > 0 && ['text', 'citations'].includes(blocks[start - 1].type)) start--;
+    answer = blocks.slice(start).filter(block => block.type === 'text').map(block => block.content ?? '').join('\n\n');
+  }
+  if (typeof answer !== 'string' || !answer.trim()) return;
+  if (mode === 'answer') return {answer};
+
   let question: ChatMessage | undefined;
   for (let i = index - 1; i >= 0; i--) {
     if (messages[i].role === 'user' && !messages[i].isRebuiltContext) {
@@ -49,15 +64,7 @@ export function readExchange(view: object, message: HTMLElement): Exchange | und
   }
   if (!question || question.isInterrupt || (question.turnId && response.turnId && question.turnId !== response.turnId)) return;
   const questionText = typeof question.displayContent === 'string' ? question.displayContent : visibleQuestion(message, question.id);
-  const blocks = response.contentBlocks;
-  let answer = response.content;
-  if (Array.isArray(blocks) && blocks.length) {
-    let start = blocks.length;
-    while (start > 0 && ['text', 'citations'].includes(blocks[start - 1].type)) start--;
-    answer = blocks.slice(start).filter(block => block.type === 'text').map(block => block.content ?? '').join('\n\n');
-  }
-  if (!questionText?.trim() || typeof answer !== 'string' || !answer.trim()) return;
-  return {question: questionText, answer};
+  if (questionText?.trim()) return {question: questionText, answer};
 }
 
 function visibleQuestion(response: HTMLElement, id: string): string | undefined {
@@ -69,23 +76,25 @@ function visibleQuestion(response: HTMLElement, id: string): string | undefined 
 }
 
 /** Observe only Claudian's pane. Its own final copy action signals a completed reply. */
-export function watchClaudian(root: HTMLElement, save: (message: HTMLElement) => void): () => void {
-  const addButton = (message: HTMLElement) => {
+export function watchClaudian(root: HTMLElement, save: (message: HTMLElement, mode: ClaudianSaveMode) => void): () => void {
+  const addButtons = (message: HTMLElement) => {
     const actions = responseActions(message);
     if (!actions || actions.querySelector('.' + saveButtonClass)) return;
-    const button = root.ownerDocument.createElement('button');
-    button.type = 'button';
-    button.className = saveButtonClass;
-    button.textContent = '存为原句批注';
-    button.title = '先在原文选中一句，再点击这里保存这轮问答';
-    button.onmousedown = event => event.preventDefault();
-    button.onclick = event => {
-      event.stopPropagation();
-      save(message);
-    };
-    actions.append(button);
+    for (const [mode, label] of saveActions) {
+      const button = root.ownerDocument.createElement('button');
+      button.type = 'button';
+      button.className = saveButtonClass;
+      button.textContent = label;
+      button.title = '先在原文选中一句，再点击保存';
+      button.onmousedown = event => event.preventDefault();
+      button.onclick = event => {
+        event.stopPropagation();
+        save(message, mode);
+      };
+      actions.append(button);
+    }
   };
-  root.querySelectorAll<HTMLElement>(responseSelector).forEach(addButton);
+  root.querySelectorAll<HTMLElement>(responseSelector).forEach(addButtons);
   const Observer = root.ownerDocument.defaultView?.MutationObserver ?? MutationObserver;
   const observer = new Observer(records => {
     for (const record of records) {
@@ -94,8 +103,8 @@ export function watchClaudian(root: HTMLElement, save: (message: HTMLElement) =>
         const element = node as HTMLElement;
         if (element.classList.contains(saveButtonClass)) continue;
         const message = element.closest<HTMLElement>(responseSelector);
-        if (message) addButton(message);
-        else element.querySelectorAll<HTMLElement>(responseSelector).forEach(addButton);
+        if (message) addButtons(message);
+        else element.querySelectorAll<HTMLElement>(responseSelector).forEach(addButtons);
       }
     }
   });
@@ -118,16 +127,20 @@ function quoteLines(text: string, newline: string): string {
   }).join(newline);
 }
 
-export function insertExchange(current: string, selection: SelectionSnapshot, exchange: Exchange): string {
+export function insertClaudianCallout(current: string, selection: SelectionSnapshot, note: ClaudianNote): string {
   if (current !== selection.source || !canCollectSelection(selection)) throw new Error('原文选区已变化，请重新选中原句。');
   const target = insertionTarget(current, selection, 'below');
   if (!target) throw new Error('请在正文的普通段落内选中原句。');
-  const {question, answer} = exchange;
-  if (!question.trim() || !answer.trim() || question.length + answer.length > 40_000) {
-    throw new Error('问答为空或过长，无法插入。');
+  const {question, answer} = note;
+  const label = question === undefined ? '答案' : '问答';
+  if (question?.trim() === '' || !answer.trim() || (question?.length ?? 0) + answer.length > 40_000) {
+    throw new Error(`${label}为空或过长，无法插入。`);
   }
   const newline = current.includes('\r\n') ? '\r\n' : '\n';
-  const block = [
+  const block = (question === undefined ? [
+    '> [!note]- Claudian 回答',
+    quoteLines(answer, newline),
+  ] : [
     '> [!question]- Claudian 问答',
     '> **我的提问**',
     '>',
@@ -136,10 +149,10 @@ export function insertExchange(current: string, selection: SelectionSnapshot, ex
     '> **Claudian 回答**',
     '>',
     quoteLines(answer, newline),
-  ].join(newline);
+  ]).join(newline);
   const following = current.slice(target.offset);
   if (following.trimStart().startsWith(block + newline) || following.trimStart() === block) {
-    throw new Error('这轮问答已在原句下方。');
+    throw new Error(`${label}已在原句下方。`);
   }
   // Existing blank lines can supply the paragraph break after the callout.
   const breakAfter = following.trim() && !/^(?:[ \t]*\r?\n){2}/.test(following) ? newline + newline : '';
