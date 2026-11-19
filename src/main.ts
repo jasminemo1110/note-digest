@@ -11,6 +11,7 @@ import { applyHighlights, clearHighlights, highlightRanges } from './highlights'
 import { locateAnchor } from './anchors';
 import type { DigestResult } from './core';
 import { isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
+import { CLAUDIAN_VIEW, insertExchange, readExchange, watchClaudian } from './claudian-callout';
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
@@ -22,6 +23,9 @@ export default class NoteDigestPlugin extends Plugin {
   private summaryJob?: { generation: number; path: string; cancelled: boolean };
   private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number; text: string}>();
   private selectionButton?: HTMLButtonElement;
+  private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
+  private calloutBusy = false;
+  private claudianPanes = new Map<HTMLElement, () => void>();
   async onload(): Promise<void> {
     this.stopped = false;
     const data = await this.loadData();
@@ -34,6 +38,11 @@ export default class NoteDigestPlugin extends Plugin {
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
     this.addCommand({ id: 'summarize-article', name: '总结全文', callback: () => { void this.summarizeCurrentArticle(); } });
     this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
+    this.app.workspace.onLayoutReady(() => { if (!this.stopped) this.watchClaudianPanes(); });
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.watchClaudianPanes()));
+    this.registerDomEvent(document, 'keyup', event => {
+      if (event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) this.rememberCalloutSource(event.target);
+    });
     this.registerDomEvent(document, 'keydown', event => {
       if (!/^[dn]$/i.test(event.key)) return;
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -52,6 +61,7 @@ export default class NoteDigestPlugin extends Plugin {
     });
     this.registerDomEvent(document, 'mouseup', event => {
       if (this.selectionButton?.contains(event.target as Node)) return;
+      this.rememberCalloutSource(event.target);
       this.removeSelectionButton();
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
@@ -95,13 +105,18 @@ export default class NoteDigestPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('active-leaf-change', leaf => {
       this.removeSelectionButton();
       if (leaf?.view instanceof MarkdownView && leaf.view.file?.path !== this.summaryJob?.path) this.stopArticleSummary();
+      if (leaf?.view instanceof MarkdownView && leaf.view !== this.calloutSource?.view) this.calloutSource = undefined;
     }));
     this.registerEvent(this.app.workspace.on('file-open', file => {
       if (file && file.path !== this.summaryJob?.path) this.stopArticleSummary();
+      if (file && file !== this.calloutSource?.file) this.calloutSource = undefined;
     }));
   }
   onunload(): void {
     this.stopped = true; this.generation++; this.removeSelectionButton();
+    for (const cleanup of this.claudianPanes.values()) cleanup();
+    this.claudianPanes.clear();
+    this.calloutSource = undefined;
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) if (leaf.view instanceof MarkdownView) clearHighlights(leaf.view.contentEl);
   }
   refreshHighlights(): void {
@@ -135,6 +150,51 @@ export default class NoteDigestPlugin extends Plugin {
     await this.app.workspace.getLeaf(false).openFile(file, {eState: {line}});
   }
   private removeSelectionButton(): void { this.selectionButton?.remove(); this.selectionButton = undefined; }
+  private watchClaudianPanes(): void {
+    const leaves = this.app.workspace.getLeavesOfType(CLAUDIAN_VIEW);
+    const roots = new Set(leaves.map(leaf => leaf.view.containerEl));
+    for (const [root, cleanup] of this.claudianPanes) {
+      if (roots.has(root)) continue;
+      cleanup();
+      this.claudianPanes.delete(root);
+    }
+    for (const {view} of leaves) {
+      if (this.claudianPanes.has(view.containerEl)) continue;
+      const cleanup = watchClaudian(view.containerEl, message => {
+        void this.saveClaudianCallout(view, message);
+      });
+      this.claudianPanes.set(view.containerEl, cleanup);
+    }
+  }
+  private rememberCalloutSource(target: EventTarget | null): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view?.file || !(target instanceof Node) || !view.contentEl.contains(target)) return;
+    this.calloutSource = {view, file: view.file, selection: this.readArticleSelection().catch(() => undefined)};
+  }
+  private async saveClaudianCallout(view: object, message: HTMLElement): Promise<void> {
+    if (this.calloutBusy) return;
+    this.calloutBusy = true;
+    try {
+      const anchor = this.calloutSource;
+      if (!anchor) throw new Error('请先在原文中选中一句话。');
+      const exchange = readExchange(view, message);
+      if (!exchange) throw new Error('无法读取这轮完整问答。请确认回复已完成，并在对话中显示对应提问。');
+      const selection = await anchor.selection;
+      if (!selection || !canCollectSelection(selection)) throw new Error('请先在原文中选中可定位的一句话。');
+      const {file} = anchor;
+      if (this.stopped || this.calloutSource !== anchor || anchor.view.file !== file || file.path !== selection.path ||
+          this.app.workspace.getActiveFile() !== file) throw new Error('原文已切换，请重新选中原句。');
+      await this.storage.update(selection.path, current => {
+        if (this.stopped || this.calloutSource !== anchor || current === null || file.path !== selection.path) {
+          throw new Error('原文已切换，请重新选中原句。');
+        }
+        return insertExchange(current, selection, exchange);
+      });
+      if (this.calloutSource === anchor) this.calloutSource = undefined;
+      new Notice('已在原句下方插入折叠问答。');
+    } catch (error) { new Notice(error instanceof Error ? error.message : '写入问答失败。'); }
+    finally { this.calloutBusy = false; }
+  }
   async openPanel(): Promise<DigestView> {
     const leaf = await this.app.workspace.ensureSideLeaf(VIEW_TYPE, 'right', {active: false});
     if (!(leaf?.view instanceof DigestView)) throw new Error('无法打开右侧栏。');

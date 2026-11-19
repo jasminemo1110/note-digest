@@ -16,3 +16,7 @@
 .note-digest-save { border-top: 1px solid var(--background-modifier-border); padding-top: 12px; }
 .note-digest-save label { display: block; margin: 8px 0; }
 .note-digest-save-duplicate { color: var(--text-error); font-weight: 700; }
+.claudian-user-msg-actions button.note-digest-save-claudian {
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
