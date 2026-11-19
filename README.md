@@ -2,7 +2,7 @@
 
 **在 Obsidian 原文旁读懂英文，留下语境中的词语和金句。**
 
-Note Digest 是一款独立的 Obsidian 桌面插件。打开仓库里的英文 Markdown 文章，就可以在右侧栏查看中文翻译和全文摘要、结合上下文理解表达，并把值得留下的单词和金句直接保存为学习笔记。当前版本为 **0.3.10 开发版**，支持英文 → 简体中文，采用 [MIT 许可证](LICENSE)。
+Note Digest 是一款独立的 Obsidian 桌面插件。打开仓库里的英文 Markdown 文章，就可以在右侧栏查看中文翻译和全文摘要、结合上下文理解表达，并把值得留下的单词和金句直接保存为学习笔记。当前版本为 **0.3.15 开发版**，支持英文 → 简体中文，采用 [MIT 许可证](LICENSE)。
 
 ## 安装
 
@@ -43,13 +43,13 @@ npm run build
 2. 在仓库内创建 `.obsidian/plugins/note-digest/` 文件夹。`.obsidian` 是隐藏目录，需要在文件管理器中显示隐藏文件。
 3. 将构建后的 `main.js`，以及项目根目录的 `manifest.json`、`styles.css` 复制进去。
 4. 打开 Obsidian，在**设置 → 第三方插件 / 社区插件**中允许使用社区插件，找到并启用 **Note Digest**。如果列表未刷新，重启 Obsidian。
-5. 按下方说明配置 DeepSeek API Key，再打开一篇英文 Markdown 文章开始使用。
+5. 要使用翻译、语境解释或摘要，按下方说明配置 DeepSeek API Key，再打开一篇英文 Markdown 文章开始阅读。
 
 更新时先关闭 Note Digest，更新源码并重新构建，再替换上述三个文件，最后重新启用插件。不要删除插件目录里的 `data.json`，其中保存着收藏记录和设置。
 
 ## 配置 DeepSeek API Key
 
-Note Digest 当前使用 DeepSeek，需要你自己的 **API Key**。API 调用可能产生费用，请在 DeepSeek 平台查看账户额度与用量。
+Note Digest 的翻译、语境解释和摘要使用 DeepSeek，需要你自己的 **API Key**。API 调用可能产生费用，请在 DeepSeek 平台查看账户额度与用量。
 
 1. 登录 [DeepSeek 开放平台的 API Keys 页面](https://platform.deepseek.com/api_keys)，创建一个 API Key。可参考 [DeepSeek 官方 API 文档](https://api-docs.deepseek.com/api/deepseek-api/)。
 2. 打开 Obsidian **设置 → Keychain（密钥链）**，新增一条密钥，取一个方便识别的名称，例如 `deepseek`，将 API Key 填入密钥值并保存。
@@ -105,6 +105,24 @@ Note Digest 当前使用 DeepSeek，需要你自己的 **API Key**。API 调用�
 每节最多 6,000 字符，单次最多 40 节。可停止并继续，失败后可从未完成处接着请求。摘要临时显示在侧栏。
 
 只想总结一部分时，选中超过 **400 字符**的文字或跨空行的多个段落，点击 Digest，再点侧栏的 **Summarize**。这个按钮总结所选内容，选区上限为 **12,000 字符**。选词收藏可以直接走 **Digest → 语境解释 → 保存**。
+
+## 与其他 Obsidian 插件联动
+
+Note Digest 可以独立使用，也可以与其他插件配合，把阅读时查到的解释留在原文旁。Claudian 是第一个联动示例。
+
+### Claudian · 把聊天问答留在原句旁
+
+一边读文章一边在 Claudian 提问时，可以把值得回看的解释直接留在原句下面。这项联动需要同时启用 Note Digest 和兼容的 Claudian，并打开 Claudian 的主聊天面板。已在 Claudian **2.3.43** 验证。[Claudian 项目](https://github.com/YishenTu/claudian)
+
+1. 在 Markdown 文章的普通正文段落里选中原句。
+2. 把鼠标移到想保存的已完成回复上，点 **将问答存为原句批注** 或 **仅答案存为原句批注**。
+3. Note Digest 会在所选段落下插入一个默认折叠的 Markdown 批注，并根据保存的内容生成标题，例如「单词问答：potential」。重读时点击标题就能展开。
+
+保存与起标题都在本地完成，直接使用已经生成的回复，无需为此配置 DeepSeek 密钥。只装 Note Digest 也可以正常翻译、解释、摘要和收藏。
+
+<!-- Claudian 联动截图可以补在这里。 -->
+
+后续也会评估 HiLighter 的联动，比如从高亮卡片导出原句，再用 Note Digest 查看语境解释并按需收藏。[HiLighter](https://community.obsidian.md/plugins/hilighter) · [后续计划](docs/ROADMAP.md#待评估交互)
 
 ## 当前边界
 
