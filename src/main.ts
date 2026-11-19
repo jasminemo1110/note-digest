@@ -39,7 +39,11 @@ export default class NoteDigestPlugin extends Plugin {
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
     this.addCommand({ id: 'summarize-article', name: '总结全文', callback: () => { void this.summarizeCurrentArticle(); } });
     this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
-    this.app.workspace.onLayoutReady(() => { if (!this.stopped) this.watchClaudianPanes(); });
+    this.app.workspace.onLayoutReady(() => {
+      if (this.stopped) return;
+      this.watchClaudianPanes();
+      this.refreshHighlights();
+    });
     this.registerEvent(this.app.workspace.on('layout-change', () => this.watchClaudianPanes()));
     this.registerDomEvent(document, 'keyup', event => {
       if (event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) this.rememberCalloutSource(event.target);
@@ -121,14 +125,15 @@ export default class NoteDigestPlugin extends Plugin {
     this.calloutSource = undefined;
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) if (leaf.view instanceof MarkdownView) clearHighlights(leaf.view.contentEl);
   }
-  refreshHighlights(): void {
+  refreshHighlights(path?: string): void {
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      if (leaf.view instanceof MarkdownView && leaf.view.getMode() === 'preview') leaf.view.previewMode.rerender(true);
+      // A Markdown view can reuse its existing preview when returning from edit mode.
+      if (leaf.view instanceof MarkdownView && (!path || leaf.view.file?.path === path)) leaf.view.previewMode.rerender(true);
     }
   }
   async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget): Promise<ReturnType<typeof collectionFeedback>> {
     const report = await this.collection.save(selection, result, kind, target);
-    this.refreshHighlights();
+    this.refreshHighlights(selection.path);
     return collectionFeedback(report);
   }
   async removeHighlight(id: string): Promise<void> {
