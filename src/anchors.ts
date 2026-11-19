@@ -24,7 +24,7 @@ export function paragraphRanges(text: string): { start: number; end: number }[] 
   ranges.push({start, end: text.length});
   return ranges;
 }
-export interface Anchor { block: string; offset: number; text: string; location?: { start: number; digest: string } }
+export interface Anchor { block: string; offset: number; text: string; excerpt?: true; location?: { start: number; digest: string } }
 
 export function normalizeCollectionRange(source: string, offset: number, text: string, kind: 'word' | 'quote') {
   const edges = kind === 'word' ? /[\s.,!?;:()[\]{}"'“”‘’，。！？；：（）【】—–]/u : /\s/u;
@@ -64,15 +64,24 @@ export function makeAnchor(source: string, start: number, text: string): Anchor 
     if (range.start > start) break;
     blockStart = range.start;
   }
-  const blockEnd = ranges.find(range => range.end >= start + text.length)?.end ?? body.length;
-  const block = body.slice(blockStart, blockEnd);
-  if (block.length > 24000) throw new Error('所选语境超过 24,000 字符。请选中更短的范围，或在编辑模式拆分原文段落后重试。');
-  return {block, offset: start - blockStart, text};
+  const end = start + text.length;
+  const blockEnd = ranges.find(range => range.end >= end)?.end ?? body.length;
+  if (blockEnd - blockStart > 24000) {
+    if (text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
+    // A large Markdown table is one paragraph for anchor purposes. Keep a bounded exact excerpt.
+    const excerptStart = Math.max(blockStart, start - 6000);
+    return {block:body.slice(excerptStart, Math.min(blockEnd, end + 6000)), offset:start - excerptStart, text, excerpt:true};
+  }
+  return {block: body.slice(blockStart, blockEnd), offset: start - blockStart, text};
 }
 /** Match the complete stored context and its boundaries, including older LF-only anchors. */
 export function locateAnchor(source: string, anchor: Anchor): number | null {
   if (anchor.block.slice(anchor.offset, anchor.offset + anchor.text.length) !== anchor.text) return null;
   const body = articleBody(source);
+  if (anchor.excerpt) {
+    const start = body.indexOf(anchor.block);
+    return start >= 0 && body.indexOf(anchor.block, start + 1) < 0 ? start + anchor.offset : null;
+  }
   const ranges = paragraphRanges(body);
   const ends = new Set(ranges.map(range => range.end));
   const matches = new Set<number>();

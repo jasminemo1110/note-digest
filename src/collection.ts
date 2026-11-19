@@ -66,6 +66,7 @@ export function loadCollection(input: unknown): CollectionData {
         typeof record.anchor.text !== 'string' || !record.anchor.text.trim() || record.anchor.text.length > 12000 ||
         !Number.isInteger(record.anchor.offset) || record.anchor.offset < 0 ||
         record.anchor.block.slice(record.anchor.offset, record.anchor.offset + record.anchor.text.length) !== record.anchor.text ||
+        (record.anchor.excerpt !== undefined && record.anchor.excerpt !== true) ||
         (record.anchor.location !== undefined && (!record.anchor.location || !Number.isSafeInteger(record.anchor.location.start) ||
           record.anchor.location.start < record.anchor.offset || !/^[0-9a-f]{64}$/.test(record.anchor.location.digest))) ||
         (record.originalContext !== undefined && (typeof record.originalContext !== 'string' || record.originalContext.length > 12000)) ||

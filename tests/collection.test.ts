@@ -41,6 +41,20 @@ test('a collection with a verified table position saves both full cards with the
   assert.equal(articleBody(f.files.get(path)!), table);
 });
 
+test('a large table keeps a bounded anchor and can still save to the source', async () => {
+  const f = fixture();
+  const table = '| Original | Revised |\n| --- | --- |\n' + '| Earlier line | earlier text |\n'.repeat(830) +
+    '| A compelling request. | revised text |';
+  f.files.set(path, table);
+  const selection = snapshot(path, table, 'compelling', table.indexOf('compelling'));
+  const saved = await f.store.save(selection, result, 'word', 'source');
+  assert.deepEqual(saved.targets.map(target => target.ok), [true]);
+  const record = loadCollection(f.durable()).records[0];
+  assert.ok(record.anchor.block.length <= 24000);
+  assert.equal(locateAnchor(table, record.anchor), selection.start);
+  assert.equal(locateAnchor(table + '\n\n' + table, record.anchor), null);
+});
+
 test('unresolved selections fall back to the article learning note without matching a different occurrence', async () => {
   const f = fixture();
   const context = 'An embedded compelling example.';
