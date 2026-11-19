@@ -1,4 +1,5 @@
-import { canCollectSelection, type SelectionSnapshot } from './core';
+import { canCollectSelection, escapeMarkdown, type SelectionSnapshot } from './core';
+import { claudianTitle } from './claudian-title';
 import { insertionTarget, markdownBody, markdownStructure } from './markdown-source';
 
 export const CLAUDIAN_VIEW = 'claudian-view';
@@ -137,11 +138,11 @@ export function insertClaudianCallout(current: string, selection: SelectionSnaps
     throw new Error(`${label}为空或过长，无法插入。`);
   }
   const newline = current.includes('\r\n') ? '\r\n' : '\n';
-  const block = (question === undefined ? [
-    '> [!note]- Claudian 回答',
+  const title = escapeMarkdown(claudianTitle(note, selection.text)).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
+  const header = question === undefined ? '> [!note]- ' : '> [!question]- ';
+  const body = (question === undefined ? [
     quoteLines(answer, newline),
   ] : [
-    '> [!question]- Claudian 问答',
     '> **我的提问**',
     '>',
     quoteLines(question, newline),
@@ -151,11 +152,16 @@ export function insertClaudianCallout(current: string, selection: SelectionSnaps
     quoteLines(answer, newline),
   ]).join(newline);
   const following = current.slice(target.offset);
-  if (following.trimStart().startsWith(block + newline) || following.trimStart() === block) {
+  const adjacent = following.trimStart();
+  const firstBreak = adjacent.indexOf(newline);
+  const adjacentBody = adjacent.slice(firstBreak + newline.length);
+  // Recognize the same saved text even if the previous title is fixed or was edited.
+  if (adjacent.startsWith(header) && firstBreak >= 0 && (adjacentBody === body || adjacentBody.startsWith(body + newline))) {
     throw new Error(`${label}已在原句下方。`);
   }
   // Existing blank lines can supply the paragraph break after the callout.
   const breakAfter = following.trim() && !/^(?:[ \t]*\r?\n){2}/.test(following) ? newline + newline : '';
+  const block = header + title + newline + body;
   const updated = current.slice(0, target.offset) + newline + newline + block + breakAfter + following;
   const parsed = markdownBody(updated);
   const [inserted] = parsed.children.splice(target.index + 1, 1);
