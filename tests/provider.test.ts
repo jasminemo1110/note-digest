@@ -37,14 +37,34 @@ test('Japanese interface is reserved but not enabled', () => {
 });
 
 test('explanation request asks for IPA and distinguishes errors from register; results stay structured', async () => {
-  const explanation = {translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null}};
+  const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null}};
   const transport: Transport = async request => {
     const prompt = JSON.parse(request.body as string).messages[0].content;
     assert.match(prompt, /IPA/); assert.match(prompt, /informal/); assert.match(prompt, /uncertain/);
     assert.match(prompt, /Do not silently replace/);
-    assert.match(prompt, /"translation" field must be a Simplified Chinese equivalent of the exact text in "selected"/);
+    assert.match(prompt, /"translation" field must be a concise Simplified Chinese equivalent of the headword/);
     assert.match(prompt, /Put contextual elaboration in "meaning"/);
     return {status:200, json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(explanation)}}]}};
   };
   assert.deepEqual(await digest(selected, 'explain', credential, transport), explanation);
+});
+
+test('inflected lookup teaches the base headword without changing the quoted source payload', async () => {
+  const selection = snapshot('a.md', 'Interpreting Research Findings', 'Interpreting');
+  const explanation = {headword:'interpret', translation:'解读；解释', meaning:'interpret 表示解读。原文 Interpreting 是其 -ing 形式，用于标题。', usage:'interpret findings 解读研究结果', example:'We interpret the data. 我们解读数据。', pronunciation:'/ɪnˈtɜːprɪt/', assessment:{status:'natural', explanation:'标题用法自然。', correction:null}};
+  const response = await digest(selection, 'explain', credential, async request => {
+    const body = JSON.parse(request.body as string);
+    const prompt = body.messages[0].content;
+    assert.match(prompt, /Interpreting -> interpret, went -> go/);
+    assert.match(prompt, /glosses over -> gloss over/);
+    assert.match(prompt, /Keep lexical adjectives/);
+    assert.match(prompt, /pronunciation for the headword/);
+    assert.match(prompt, /explicitly explain the original form/);
+    assert.deepEqual(JSON.parse(body.messages[1].content), {selected:'Interpreting', context:selection.context});
+    return {status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(explanation)}}]}};
+  });
+  assert.deepEqual(response, explanation);
+  const {headword, ...missingHeadword} = explanation;
+  await assert.rejects(digest(selection, 'explain', credential, async () => ({status:200,
+    json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(missingHeadword)}}]}})), /AI 返回格式异常/);
 });

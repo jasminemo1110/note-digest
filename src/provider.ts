@@ -11,7 +11,9 @@ export async function digest(selection: Pick<DigestSelection, 'text' | 'context'
   const fields = action === 'explain'
     ? 'translation, meaning (contextual sense and uncertainty), usage (natural usage), example (English example and Chinese translation)'
     : action === 'summarize' ? 'summary (a concise Chinese overview and key points of the selected text, with no invented facts)' : 'translation';
-  const explanationRules = action === 'explain' ? ` Also return pronunciation (string with IPA, label UK/US variants if useful; null for a sentence, uncertain pronunciation, or not applicable). Never invent IPA for misspelled/nonstandard forms; discuss the standard form in usage instead.
+  const explanationRules = action === 'explain' ? ` Also return headword (string or null). For a selected English word, use its dictionary headword in the actual context: verbs in base form (Interpreting -> interpret, went -> go), nouns in singular form, and inflected phrasal verbs in base form (glosses over -> gloss over). Use context to disambiguate (saw -> see for the past-tense verb, saw for the tool). Keep lexical adjectives and established expressions intact (a compelling argument -> headword compelling when selecting compelling, not compel); do not mechanically strip suffixes. Preserve proper-name capitalization. Return null for sentences, uncertain analyses, or misspelled/nonstandard forms; do not use headword to silently correct errors.
+Lead meaning and usage with the headword and its context-appropriate sense and patterns. When the selected form differs, explicitly explain the original form and its grammatical role in meaning (for example, Interpreting is the present participle/gerund of interpret, as appropriate in context). Keep original intent distinct from corrections. Examples should teach the headword naturally.
+Also return pronunciation for the headword when available, otherwise the selected expression (string with IPA, label UK/US variants if useful; null for a sentence, uncertain pronunciation, or not applicable). Never invent IPA for misspelled/nonstandard forms; discuss the standard form in usage instead.
 Return assessment as an object with status, explanation, correction. status must be natural, informal, unnatural, incorrect, or uncertain.
 Assess the selected expression as used in its sentence. Distinguish definite spelling/grammar/word-choice errors (incorrect), understandable but awkward phrasing (unnatural), valid colloquial/dialectal/register variants (informal), normal usage (natural), and missing or ambiguous evidence (uncertain).
 explanation is a nonempty Chinese explanation grounded in the supplied context; identify the offending text and why when there is an error. Do not mistake informal language, quotation, dialect, or style preference for an error. Do not critique unrelated surrounding sentences.
@@ -19,13 +21,19 @@ correction must be a minimal corrected English expression or sentence for incorr
 usage should cover relevant patterns and collocations with context-appropriate examples, clearly separating contextual meaning from other possible senses. example contains English and Chinese. These are AI suggestions, not authoritative judgments.` : '';
   const task = action === 'summarize'
     ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.'
+    : action === 'explain'
+    ? 'The "translation" field must be a concise Simplified Chinese equivalent of the headword in the selected context, or of the exact selected text when headword is null. Never translate the surrounding sentence or heading when a word or phrase is selected. Keep the original inflection and grammatical role in "meaning".'
     : 'The "translation" field must be a Simplified Chinese equivalent of the exact text in "selected". Use "context" only to choose the intended sense and wording for this field. If "selected" is a word or phrase, give a word or phrase equivalent. Never translate the surrounding sentence or heading, or add subjects, objects, actions, or claims that come only from "context". For example, with selected "grip" in "The firm’s grip on the market weakens", translation is "牢牢控制".';
   const meaningRule = action === 'explain'
-    ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the selection.'
+    ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the word or expression being explained.'
     : '';
   return requestJson(key, requestUrl, languageInstruction('en') +
     ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules,
-    {selected: selection.text, context: selection.context}, value => validateResult(value, action));
+    {selected: selection.text, context: selection.context}, value => {
+      const result = validateResult(value, action);
+      if (action === 'explain' && result.headword === undefined) throw new Error('AI 未返回词头。');
+      return result;
+    });
 }
 
 async function requestJson<T>(key: string, requestUrl: Transport, prompt: string, input: object, validate: (value: unknown) => T): Promise<T> {

@@ -5,7 +5,7 @@ import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
 import { shortContext } from './reading-actions';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
-import { canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -72,9 +72,11 @@ export class DigestView extends ItemView {
         });
       }
     } else {
-      el.createEl('h3',{text:selection.text,cls:'note-digest-original'});
+      const headword = explanationHeadword(selection.text, result);
+      el.createEl('h3',{text:headword,cls:'note-digest-original'});
       el.createEl('p',{text:result.pronunciation ?? '音标：不适用或无法可靠确定',cls:'note-digest-muted'});
       el.createEl('p',{text:result.translation,cls:'note-digest-result'});
+      if (headword !== selection.text) el.createEl('p',{text:'原文词形：' + selection.text,cls:'note-digest-muted'});
       if (article) {
         let context = article.text;
         try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
@@ -283,7 +285,7 @@ export class DigestView extends ItemView {
       list.createEl('h4',{text:title});
       for(const record of items) {
         const row=list.createDiv({cls:'note-digest-saved-row'});
-        row.createEl('p',{text:record.anchor.text});
+        row.createEl('p',{text:record.kind === 'word' ? explanationHeadword(record.anchor.text,record.result) : record.anchor.text});
         row.createEl('p',{text:record.result.translation,cls:'note-digest-saved-translation'});
         const locate=row.createEl('button',{text:'定位原文'});
         locate.onclick=()=>{void this.plugin.revealRecord(path,record.id);};

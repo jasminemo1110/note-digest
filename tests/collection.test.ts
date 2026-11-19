@@ -19,6 +19,49 @@ function fixture(initial?: CollectionData) {
   return {files, store, port, durable: () => durable, fail: (value: string) => failPath=value, failPersist:(value:boolean) => persistFails=value};
 }
 const select = () => snapshot(path, source, 'compelling', source.indexOf('compelling'));
+test('normalized cards use the base headword in both targets and keep original anchors across reload', async () => {
+  const f=fixture();
+  const original='Interpreting Research Findings';
+  f.files.set(path,original);
+  const selection=snapshot(path,original,'Interpreting');
+  const explanation={...result,headword:'interpret',translation:'解读',pronunciation:'/ɪnˈtɜːprɪt/'};
+  const saved=await f.store.save(selection,explanation,'word','both');
+  for (const target of saved.targets) {
+    const text=f.files.get(target.path)!;
+    assert.match(text,/#### interpret\n/);
+    assert.match(text,/\*\*原文词形\*\* Interpreting/);
+    assert.ok(text.includes('Interpreting Research Findings'));
+  }
+  const record=loadCollection(f.durable()).records[0];
+  assert.equal(record.result.headword,'interpret');
+  assert.equal(record.anchor.text,'Interpreting');
+  assert.equal(locateAnchor(original,record.anchor),0);
+  const duplicate=await f.store.save(selection,explanation,'word','both');
+  assert.equal(duplicate.record.id,saved.record.id);
+  const sidebar=await f.store.saveSidebarWord({sidebar:true,text:'Interpreting',context:original,contextOffset:0},explanation);
+  assert.equal(sidebar.duplicate,false);
+  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!,/#### interpret\n/);
+});
+
+test('explicit update changes an old inflected title in both copies and preserves manual notes', async () => {
+  const f=fixture();
+  const original='Interpreting Research Findings';
+  f.files.set(path,original);
+  const selection=snapshot(path,original,'Interpreting');
+  const saved=await f.store.save(selection,result,'word','both');
+  for (const {path:target} of saved.targets) {
+    f.files.set(target,f.files.get(target)!.replace('**音标**','我的备注\n\n**音标**'));
+  }
+  await f.store.updateExplanation(selection,saved.record.id,{...result,headword:'interpret'});
+  for (const {path:target} of saved.targets) {
+    assert.match(f.files.get(target)!,/#### interpret\n/);
+    assert.match(f.files.get(target)!,/我的备注/);
+    assert.match(f.files.get(target)!,/\*\*原文词形\*\* Interpreting/);
+  }
+  await f.store.removeNotes(saved.record.id);
+  assert.equal(articleBody(f.files.get(path)!),original);
+  for (const {path:target} of saved.targets) assert.ok(!f.files.get(target)!.includes(`<!-- note-digest:record:${saved.record.id} -->`));
+});
 const sidebarWord = (context: string, contextOffset = context.indexOf('compelling')) =>
   ({sidebar:true as const, text:'compelling', context, contextOffset});
 

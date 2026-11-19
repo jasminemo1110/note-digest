@@ -1,4 +1,4 @@
-import { canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
 import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
@@ -87,7 +87,8 @@ function sourceLink(path: string | null): string {
 }
 function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): string {
   const result = record.result;
-  let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}\n\n${sourceLink(doc.path)} · ${record.createdAt.slice(0, 10)}\n\n${quoted(record.anchor.text)}\n\n**中文翻译**\n\n${quoted(result.translation)}`;
+  const headword = record.kind === 'word' ? explanationHeadword(record.anchor.text, result) : record.anchor.text;
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(headword).replace(/\r?\n/g, ' ')}\n\n${sourceLink(doc.path)} · ${record.createdAt.slice(0, 10)}\n\n${quoted(record.anchor.text)}\n\n**中文翻译**\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
     text += `\n\n**原始语境**\n\n${quoted(record.context)}`;
     for (const [label, value] of [['音标', result.pronunciation ?? '不适用或无法可靠确定'], ['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
@@ -102,10 +103,12 @@ function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): stri
 }
 function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   const result = record.result;
-  let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
+  const headword = record.kind === 'word' ? explanationHeadword(record.anchor.text, result) : record.anchor.text;
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n### ${record.kind === 'word' ? '词语' : '金句'}：${escapeMarkdown(headword).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
   text += `\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
+    if (headword !== record.anchor.text) text += `\n\n**原文词形** ${escapeMarkdown(record.anchor.text)}`;
     text += `\n\n**原始语境**\n\n${quoted(shortContext(record.anchor))}`;
     for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
       if (value) text += `\n\n**${label}**\n\n${quoted(value)}`;
@@ -120,10 +123,12 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
 function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = false, context?: string): string {
   const result = record.result;
   const prefix = record.kind === 'quote' ? '金句：' : historicalWordPrefix ? '词语：' : '';
-  let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${prefix}${escapeMarkdown(record.anchor.text).replace(/\r?\n/g, ' ')}`;
+  const headword = record.kind === 'word' ? explanationHeadword(record.anchor.text, result) : record.anchor.text;
+  let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${prefix}${escapeMarkdown(headword).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
   text += `\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
+    if (headword !== record.anchor.text) text += `\n\n**原文词形** ${escapeMarkdown(record.anchor.text)}`;
     text += `\n\n**原始语境**\n\n${quoted(context ?? shortContext(record.anchor))}`;
     for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
       if (value) text += `\n\n**${label}**\n\n${quoted(value)}`;

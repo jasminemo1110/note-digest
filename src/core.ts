@@ -21,6 +21,7 @@ export interface ExpressionAssessment {
 }
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
+  headword?: string | null;
   pronunciation?: string | null; assessment?: ExpressionAssessment;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
 }
@@ -64,6 +65,12 @@ export function validateResult(value: unknown, action: Action): DigestResult {
   const validated: DigestResult = { translation: result.translation, ...result };
   if (action === 'explain') {
     const input = value as Record<string, unknown>;
+    // Optional for collections generated before normalized headwords were introduced.
+    if (input.headword !== undefined) {
+      if (input.headword !== null && (typeof input.headword !== 'string' || !input.headword.trim() ||
+          input.headword.length > 200 || /[\r\n\0]/.test(input.headword))) throw new Error('AI 词头字段异常。');
+      validated.headword = typeof input.headword === 'string' ? input.headword.trim() : null;
+    }
     const pronunciation = input.pronunciation;
     if (pronunciation !== null && (typeof pronunciation !== 'string' || !pronunciation.trim() || pronunciation.length > 500)) throw new Error('AI 音标字段异常。');
     const assessment = input.assessment;
@@ -79,6 +86,10 @@ export function validateResult(value: unknown, action: Action): DigestResult {
       correction: typeof correction === 'string' ? correction.trim() : null };
   }
   return validated;
+}
+/** Display metadata must never replace the original selection or its anchor. */
+export function explanationHeadword(text: string, result: DigestResult): string {
+  return result.headword ?? text;
 }
 export function escapeMarkdown(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/([\\`*_{}\[\]()#+.!|~=-])/g, '\\$1');

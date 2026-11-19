@@ -65,6 +65,18 @@ test('invalid, missing and excessive model fields are rejected', () => {
   assert.throws(() => validateResult({ translation: '词' }, 'explain'));
   assert.deepEqual(validateResult({translation: '词', unwanted: '<script>'}, 'translate'), {translation: '词'});
 });
+
+test('headwords survive validation and legacy results remain compatible', () => {
+  const base = {translation:'解读',meaning:'含义',usage:'用法',example:'例句',pronunciation:null,
+    assessment:{status:'natural',explanation:'自然',correction:null}};
+  assert.equal(validateResult({...base,headword:' interpret '},'explain').headword,'interpret');
+  assert.equal(validateResult({...base,headword:null},'explain').headword,null);
+  assert.equal(Object.hasOwn(validateResult(base,'explain'),'headword'),false);
+  for (const headword of ['', ' ', 42, {}, 'a'.repeat(201), 'interpret\n# injected', 'a\0b']) {
+    assert.throws(() => validateResult({...base,headword},'explain'), /词头/);
+  }
+  assert.deepEqual(validateResult({translation:'解读',headword:'interpret'},'translate'),{translation:'解读'});
+});
 test('edited source refuses write even if selected word still exists', () => {
   const s = snapshot('a.md', 'A word.', 'word');
   assert.throws(() => insertTranslation('A word. Changed.', s, '词', 'below'), /原文已修改/);

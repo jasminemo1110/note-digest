@@ -28,6 +28,23 @@ function setup() {
 }
 const selected=snapshot('a.md','A compelling argument.','compelling');
 const explained:DigestResult={translation:'有说服力的',pronunciation:'/kəmˈpelɪŋ/',meaning:'含义',usage:'用法',example:'例句',assessment:{status:'natural',explanation:'不应显示这句话',correction:null}};
+test('base headword leads explanation and collection while saving keeps the original selection', async () => {
+  const {view,document,calls,plugin}=setup();
+  const selection=snapshot('a.md','Interpreting Research Findings','Interpreting');
+  const result={...explained,headword:'interpret',translation:'解读',pronunciation:'/ɪnˈtɜːprɪt/'};
+  plugin.collection.recordsFor=(()=>[{id:'saved',kind:'word',anchor:{text:'Interpreting'},result,active:true,savedTo:['a.md']}]) as any;
+  view.render(selection,result);
+  assert.equal(document.querySelector('h3.note-digest-original')?.textContent,'interpret');
+  assert.match(document.body.textContent!,/原文词形：Interpreting/);
+  assert.equal(document.querySelector('blockquote')?.textContent,selection.context);
+  assert.equal(document.querySelector('.note-digest-saved-row p')?.textContent,'interpret');
+  const save=document.querySelector('.note-digest-save button') as HTMLButtonElement;
+  await save.onclick!(new (domEvent(document))('click') as any);
+  assert.deepEqual(calls[0],['collect',selection,result,'word','both']);
+  view.render(selection,{...result,headword:null});
+  assert.equal(document.querySelector('h3.note-digest-original')?.textContent,'Interpreting');
+  assert.ok(!document.body.textContent!.includes('原文词形：'));
+});
 test('toolbar precedes original; insert buttons directly follow translation; save defaults to both',async()=>{
   const {view,document,calls}=setup();view.render(selected,{translation:'有说服力的'});
   const toolbar=document.querySelector('.note-digest-toolbar')!;const original=document.querySelector('.note-digest-original')!;
