@@ -9,6 +9,7 @@ import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSM
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
+  private selectionView?: {selection: DigestSelection; result?: DigestResult; mode: Action | 'idle'};
   constructor(leaf: WorkspaceLeaf, private plugin: NoteDigestPlugin) { super(leaf); }
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return 'Note Digest'; }
@@ -26,23 +27,38 @@ export class DigestView extends ItemView {
     const button = parent.createEl('button', {text});
     button.onclick = () => { void this.plugin.summarizeCurrentArticle(previous); };
   }
+  private renderToolbar(el: HTMLElement, showingArticleSummary = false): void {
+    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
+    const selectionView = this.selectionView;
+    if (selectionView) {
+      const {selection, result, mode} = selectionView;
+      const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
+      if (isLongSelection(selection.text)) choices.unshift(['Summarize','summarize']);
+      for (const [label, action] of choices) {
+        const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(!showingArticleSummary && action === mode)}});
+        button.onclick = () => {
+          if (showingArticleSummary && action === mode && result) void this.plugin.run(selection, action, result);
+          else void this.plugin.run(selection, action);
+        };
+      }
+      if ('sidebar' in selection) return;
+    }
+    if (showingArticleSummary) {
+      actions.createEl('button', {text:'总结全文', attr:{'aria-pressed':'true'}});
+    } else {
+      this.summaryButton(actions);
+    }
+  }
   render(selection?: DigestSelection, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
+    this.selectionView = selection ? {selection, result, mode} : undefined;
     const el = this.startRender();
     const revision = this.renderRevision;
-    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
+    this.renderToolbar(el);
     if (!selection) {
-      this.summaryButton(actions);
       el.createEl('p', {text: '在文章或侧栏中选择英文，再点击 Digest 或按 D。'});
       const path = this.app.workspace.getActiveFile()?.path; if (path) this.renderCollection(path); return;
     }
-    const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
-    if (isLongSelection(selection.text)) choices.unshift(['Summarize','summarize']);
-    for (const [label, action] of choices) {
-      const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(action===mode)}});
-      button.onclick = () => { void this.plugin.run(selection, action); };
-    }
     const article = 'path' in selection ? selection : undefined;
-    if (article) this.summaryButton(actions);
     if (!article) el.createEl('p', {text: '侧栏 · 临时选区', cls:'note-digest-muted'});
     if (mode === 'idle') {
       el.createEl('p', {text:'已选中长段落。请选择 Summarize、翻译或语境解释。',cls:'note-digest-muted'}); return;
@@ -138,8 +154,11 @@ export class DigestView extends ItemView {
     };
   }
   renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
+    const selection = this.selectionView?.selection;
+    if (selection && (!('path' in selection) || selection.path !== path)) this.selectionView = undefined;
     const el = this.startRender();
-    const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'全文摘要操作'}});
+    this.renderToolbar(el, true);
+    const actions = el.createDiv({cls:'note-digest-actions', attr:{'aria-label':'全文摘要操作'}});
     if (running) {
       const stop = actions.createEl('button', {text:'停止摘要'});
       stop.onclick = () => {
@@ -148,7 +167,7 @@ export class DigestView extends ItemView {
       };
     } else {
       if (article && !article.overview) this.summaryButton(actions, article.sections.length ? '继续摘要' : '重试摘要', article);
-      this.summaryButton(actions, article?.overview ? '重新总结全文' : '总结全文');
+      this.summaryButton(actions, article ? '重新总结全文' : '重试摘要');
     }
     const title = path.split('/').at(-1)?.replace(/\.md$/, '') ?? path;
     el.createEl('h3', {text:title, cls:'note-digest-original'});

@@ -249,6 +249,7 @@ export default class NoteDigestPlugin extends Plugin {
         }
       };
       const renderProgress = (snapshot: ArticleSummary) => {
+        if (!isCurrent() || job.cancelled) return;
         article = snapshot;
         const done = snapshot.sections.length;
         const total = snapshot.parts.length;
@@ -357,7 +358,7 @@ export default class NoteDigestPlugin extends Plugin {
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
     finally { if (action === 'quote') this.quoteBusy = false; }
   }
-  async run(selection: DigestSelection, action: Action): Promise<DigestResult | undefined> {
+  async run(selection: DigestSelection, action: Action, previousResult?: DigestResult): Promise<DigestResult | undefined> {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
@@ -367,6 +368,10 @@ export default class NoteDigestPlugin extends Plugin {
       const file = article ? this.app.vault.getFileByPath(article.path) : null;
       if (article && (!file || await this.app.vault.read(file) !== article.source)) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
+      if (previousResult) {
+        panel.render(selection, previousResult, '', action);
+        return previousResult;
+      }
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
       const result = article && action === 'translate' && isLongSelection(article.text) && canCollectSelection(article)
         ? await translateParagraphs(article,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,

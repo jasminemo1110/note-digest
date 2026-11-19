@@ -101,6 +101,32 @@ test('full summary is reachable without selecting text and partial results offer
   assert.deepEqual(calls, [['summarize', undefined], ['locate', article, article.parts[0]], ['stop'], ['summarize', article]]);
 });
 
+test('article summary keeps selection actions visible and restores the previous result for the same selection', () => {
+  const {view, document, calls} = setup();
+  const toolbarButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('.note-digest-toolbar button'));
+  view.render(selected, explained);
+  toolbarButtons()[2].click();
+
+  view.renderArticleSummary(selected.path, undefined, '正在读取正文…', true);
+  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['翻译', '语境解释', '总结全文']);
+  assert.equal(toolbarButtons()[2].getAttribute('aria-pressed'), 'true');
+  toolbarButtons()[0].click();
+  assert.deepEqual(calls.at(-1), ['run', selected, 'translate']);
+
+  const article = {...planArticleSummary(selected.path, selected.source), overview: '全文摘要结果'};
+  view.renderArticleSummary(selected.path, article);
+  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['翻译', '语境解释', '总结全文']);
+  toolbarButtons()[1].click();
+  assert.deepEqual(calls.at(-1), ['run', selected, 'explain', explained]);
+});
+
+test('summary of another article does not offer actions for the previous article selection', () => {
+  const {view, document} = setup();
+  view.render(selected, explained);
+  view.renderArticleSummary('other.md', undefined, '正在读取正文…', true);
+  assert.deepEqual(Array.from(document.querySelectorAll('.note-digest-toolbar button'), button => button.textContent), ['总结全文']);
+});
+
 
 test('inactive retained card exposes independent delete button and invokes only explicit deletion',async()=>{
   const {view,document,calls,plugin}=setup();
