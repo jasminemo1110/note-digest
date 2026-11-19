@@ -26,6 +26,11 @@ export function paragraphRanges(text: string): { start: number; end: number }[] 
 }
 export interface Anchor { block: string; offset: number; text: string; excerpt?: true; location?: { start: number; digest: string } }
 
+export async function digestText(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function normalizeCollectionRange(source: string, offset: number, text: string, kind: 'word' | 'quote') {
   const edges = kind === 'word' ? /[\s.,!?;:()[\]{}"'“”‘’，。！？；：（）【】—–]/u : /\s/u;
   let start = offset;

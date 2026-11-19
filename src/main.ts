@@ -7,7 +7,7 @@ import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
 import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
-import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
+import { applyHighlights, clearHighlights, highlightRanges, tableHighlightRanges } from './highlights';
 import { articleBody, locateAnchor } from './anchors';
 import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
@@ -85,8 +85,12 @@ export default class NoteDigestPlugin extends Plugin {
       if (this.stopped) return;
       const info = context.getSectionInfo(element);
       if (!info) return;
+      const tables = element.matches('table') ? [element as HTMLTableElement] : Array.from(element.querySelectorAll('table'));
+      const tableHighlights = tables.length === 1 ? await tableHighlightRanges(source, info, tables[0], records) : undefined;
+      if (this.stopped) return;
       const child = new MarkdownRenderChild(element);
       child.register(() => clearHighlights(element)); context.addChild(child);
+      if (tableHighlights) for (const [cell, ranges] of tableHighlights) applyHighlights(cell, ranges);
       const candidates = element.matches('p') ? [element] : Array.from(element.querySelectorAll('p'));
       for (const paragraph of candidates) {
         if (paragraph.closest('pre, code, .internal-embed')) continue;

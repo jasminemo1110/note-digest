@@ -114,6 +114,13 @@ function readingBlocks(node: Nodes): ReadingBlock[] {
   return [];
 }
 
+function readingTable(nodes: Root['children'], bounds?: SourceRange, widgetStart?: number): Table | undefined {
+  const tables = nodes.filter((node): node is Table => node.type === 'table' && (widgetStart !== undefined
+    ? range(node).start === widgetStart
+    : !!bounds && contains(bounds, range(node))));
+  if (tables.length === 1) return tables[0];
+}
+
 export function mapReadingRange(source: string, section: RenderedSection | undefined,
   blockText: string, localOffset: number, text: string, cell?: TableCellPosition, tag?: string): SourceRange | undefined {
   if (!text.trim() || blockText.slice(localOffset, localOffset + text.length) !== text) return;
@@ -122,11 +129,8 @@ export function mapReadingRange(source: string, section: RenderedSection | undef
   const nodes = markdownBody(source).children;
   let candidates: ReadingBlock[];
   if (cell) {
-    const tables = nodes.filter((node): node is Table => node.type === 'table' && (cell.widgetStart !== undefined
-      ? range(node).start === cell.widgetStart
-      : !!bounds && contains(bounds, range(node))));
-    if (tables.length !== 1) return;
-    const table = tables[0];
+    const table = readingTable(nodes, bounds, cell.widgetStart);
+    if (!table) return;
     if (table.children.length !== cell.rows || table.children[0].children.length !== cell.columns) return;
     const tableCell = table.children[cell.row]?.children[cell.column];
     if (!tableCell) return;
@@ -141,18 +145,56 @@ export function mapReadingRange(source: string, section: RenderedSection | undef
   }
   candidates = candidates.filter(node => isSupported(source, node) && normalized(visibleChildren(node.children)!) === normalized(blockText));
   if (candidates.length !== 1) return;
-  const {children} = candidates[0];
+  return readingRangeMapper(source, candidates[0], blockText)(localOffset, text.length);
+}
+
+function readingRangeMapper(source: string, {children}: ReadingBlock, blockText: string) {
   const rendered = visibleChildren(children)!;
   const coordinates = (point: number) => normalized(blockText.slice(0, point)).length;
   const offsets = [...rendered.matchAll(/[ \t\r\n]+|[^ \t\r\n]/g)].map(match => ({
     start: match.index, end: match.index + match[0].length,
   }));
-  const first = offsets[coordinates(localOffset)];
-  const last = offsets[coordinates(localOffset + text.length) - 1];
-  if (!first || !last) return;
-  const start = visiblePoint(source, children, first.start, 'start');
-  const end = visiblePoint(source, children, last.end, 'end');
-  if (start !== undefined && end !== undefined && end > start) return {start, end};
+  return (localOffset: number, length: number): SourceRange | undefined => {
+    const first = offsets[coordinates(localOffset)];
+    const last = offsets[coordinates(localOffset + length) - 1];
+    if (!first || !last) return;
+    const start = visiblePoint(source, children, first.start, 'start');
+    const end = visiblePoint(source, children, last.end, 'end');
+    if (start !== undefined && end !== undefined && end > start) return {start, end};
+  };
+}
+
+/** Project verified source ranges onto a rendered table, round-tripping each visible match. */
+export function mapTableRanges<T extends SourceRange>(source: string, section: RenderedSection, rows: string[][], ranges: T[]) {
+  const mapped: {row: number; column: number; range: SourceRange; selection: T}[] = [];
+  const bounds = sectionRange(source, section);
+  if (!bounds) return mapped;
+  const selections = ranges.filter(selection => contains(bounds, selection));
+  if (!selections.length) return mapped;
+  const table = readingTable(markdownBody(source).children, bounds);
+  if (!table || table.children.length !== rows.length || rows.some(row => row.length !== table.children[0].children.length)) return mapped;
+
+  for (const [row, cells] of rows.entries()) {
+    for (const [column, text] of cells.entries()) {
+      const cell = table.children[row].children[column];
+      if (!cell) continue;
+      const bounds = range(cell);
+      const matches = selections.filter(selection => contains(bounds, selection));
+      if (!matches.length || !isSupported(source, cell) || normalized(visibleChildren(cell.children)!) !== normalized(text)) continue;
+      const map = readingRangeMapper(source, cell, text);
+      for (const selection of matches) {
+        const selected = source.slice(selection.start, selection.end);
+        if (!selected) continue;
+        const offsets: number[] = [];
+        for (let offset = text.indexOf(selected); offset >= 0; offset = text.indexOf(selected, offset + 1)) {
+          const result = map(offset, selected.length);
+          if (result?.start === selection.start && result.end === selection.end) offsets.push(offset);
+        }
+        if (offsets.length === 1) mapped.push({row, column, range:{start:offsets[0],end:offsets[0] + selected.length}, selection});
+      }
+    }
+  }
+  return mapped;
 }
 
 interface InlineTarget {

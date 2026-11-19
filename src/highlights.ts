@@ -1,5 +1,6 @@
-import { locateAnchor } from './anchors';
+import { articleBody, digestText, locateAnchor } from './anchors';
 import type { LearningRecord } from './collection';
+import { mapTableRanges, type RenderedSection } from './markdown-source';
 export interface HighlightRange { start: number; end: number; kind: 'word' | 'quote' }
 /** Source offsets constrain highlights to the actual rendered source section, never exports. */
 export function highlightRanges(source: string, lineStart: number, lineEnd: number, visible: string, records: LearningRecord[]): HighlightRange[] {
@@ -20,6 +21,32 @@ export function highlightRanges(source: string, lineStart: number, lineEnd: numb
   }
   return ranges;
 }
+
+export async function tableHighlightRanges(source: string, section: RenderedSection, table: HTMLTableElement,
+  records: LearningRecord[]): Promise<Map<HTMLTableCellElement, HighlightRange[]>> {
+  const highlights = new Map<HTMLTableCellElement, HighlightRange[]>();
+  const cells = Array.from(table.rows, row => Array.from(row.cells));
+  if (table.closest('.internal-embed, .markdown-embed, .markdown-source-view') || table.querySelector('table') ||
+      cells.some(row => row.some(cell => cell.rowSpan !== 1 || cell.colSpan !== 1))) return highlights;
+  const body = articleBody(source);
+  const active = records.filter(record => record.active && !record.unlocated);
+  const digest = active.some(record => record.anchor.location) ? await digestText(body) : undefined;
+  const ranges: HighlightRange[] = [];
+  for (const {anchor, kind} of active) {
+    const position = anchor.location ? (anchor.location.digest === digest ? anchor.location.start : null) : locateAnchor(source, anchor);
+    if (position === null || body.slice(position, position + anchor.text.length) !== anchor.text) continue;
+    ranges.push({start:position, end:position + anchor.text.length, kind});
+  }
+  for (const {row, column, range, selection} of mapTableRanges(source, section, cells.map(row => row.map(cell => cell.textContent ?? '')), ranges)) {
+    const cell = cells[row][column];
+    const highlight = {...range, kind:selection.kind};
+    const existing = highlights.get(cell);
+    if (existing) existing.push(highlight);
+    else highlights.set(cell, [highlight]);
+  }
+  return highlights;
+}
+
 export function clearHighlights(root: HTMLElement): void {
   for (const mark of Array.from(root.querySelectorAll('mark.note-digest-highlight'))) {
     mark.replaceWith(...Array.from(mark.childNodes));

@@ -2,7 +2,7 @@ import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMark
 import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
-import { articleBody, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
+import { articleBody, digestText, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
@@ -217,11 +217,6 @@ function updateCard(current: string, record: LearningRecord, doc: SourceDocument
     }
   }
   throw new Error('生成内容曾被手工修改，或无法确认备注位置，已保留原卡。');
-}
-
-async function digestText(text: string): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function contextualAnchor(selection: {text: string; context: string; contextOffset?: number}): Anchor {
