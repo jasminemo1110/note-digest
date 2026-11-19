@@ -1,8 +1,18 @@
 /** Generated learning sections never become source material or contextual matches. */
 export const LEARNING_BOUNDARY = '\n\n<!-- note-digest:learning -->\n';
+export const LEARNING_HEADING = '## Note Digest 学习笔记';
 export function articleBody(source: string): string {
   const boundary = source.indexOf(LEARNING_BOUNDARY);
-  return (boundary < 0 ? source : source.slice(0, boundary)).trimEnd();
+  if (boundary < 0) return source.trimEnd();
+  const afterMarker = boundary + LEARNING_BOUNDARY.length;
+  // Content can be inserted between the hidden marker and the generated heading in a rendered editor.
+  const tail = source.slice(afterMarker);
+  const heading = /^## Note Digest 学习笔记[ \t]*\r?\n[ \t\r\n]*(?=<!-- note-digest:(?:group:(?:word|quote)|record:[\w-]+) -->)/m.exec(tail);
+  if (heading && tail.slice(0, heading.index).trim()) {
+    const hiddenMarker = LEARNING_BOUNDARY.replace(/[^\r\n]/g, ' ');
+    return (source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index)).trimEnd();
+  }
+  return source.slice(0, boundary).trimEnd();
 }
 export function paragraphRanges(text: string): { start: number; end: number }[] {
   const ranges = [];

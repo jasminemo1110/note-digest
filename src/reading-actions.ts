@@ -13,6 +13,35 @@ function selectionElement(node: Node): Element | null {
   return node.nodeType === 1 ? node as Element : node.parentElement;
 }
 
+/** Read context before changing focus. A selection in one cell stays within that cell. */
+export function articleRange(range: Range, content: HTMLElement, text: string) {
+  const blockAt = (node: Node) => {
+    const element = selectionElement(node);
+    return element?.closest<HTMLElement>('td, th') ?? element?.closest<HTMLElement>(
+      'p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, dd, dt, figcaption, .cm-line',
+    );
+  };
+  const start = blockAt(range.startContainer);
+  const end = blockAt(range.endContainer);
+  const readEdge = (block: Node, before: boolean) => {
+    if (!block || !content.contains(block)) return '';
+    const edge = range.cloneRange();
+    edge.selectNodeContents(block);
+    if (before) edge.setEnd(range.startContainer, range.startOffset);
+    else edge.setStart(range.endContainer, range.endOffset);
+    return edge.toString();
+  };
+  const prefix = readEdge(start ?? range.startContainer, true);
+  const suffix = readEdge(end ?? range.endContainer, false);
+  const limited = prefix.slice(-contextLimit);
+  return {
+    block: start === end && start && content.contains(start) ? start : undefined,
+    text: prefix + text + suffix,
+    offset: prefix.length,
+    context: {text: limited + text + suffix.slice(0, contextLimit), offset: limited.length},
+  };
+}
+
 /** Sidebar context comes from the same visible prose block or text node. */
 export function sidebarSelection(selection: Selection, content: HTMLElement, includeContext = true): SidebarSelection | undefined {
   if (selection.rangeCount !== 1 || selection.isCollapsed || !content.isConnected) return;

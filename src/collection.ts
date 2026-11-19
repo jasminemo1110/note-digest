@@ -2,7 +2,7 @@ import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMark
 import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
-import { articleBody, LEARNING_BOUNDARY, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
+import { articleBody, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
@@ -11,9 +11,10 @@ const SIDEBAR_NOTE_HEADER = '<!-- note-digest:sidebar-words -->';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
+  originalContext?: string; unlocated?: true;
   result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean; pendingExplanation?: {result: DigestResult; copies: {path: string; before: string; after: string}[]};
 }
-type LearningCard = Pick<LearningRecord, 'id' | 'kind' | 'anchor' | 'result'>;
+type LearningCard = Pick<LearningRecord, 'id' | 'kind' | 'anchor' | 'result' | 'originalContext'>;
 export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
 export interface StoragePort {
   read(path: string): Promise<string | null>;
@@ -30,6 +31,7 @@ export function collectionFeedback(report: SaveReport): {text: string; duplicate
     if (failed.length < report.targets.length) details.unshift(saved ? '已保存到部分位置' : '部分位置已有收藏');
     return {text: details.join('\n'), duplicate: false};
   }
+  if (report.record.unlocated && saved) return {text: '已保存到独立学习笔记', duplicate: false};
   if (saved) return {text: '已保存', duplicate: false};
   return {text: report.record.kind === 'word' ? '本词已收藏' : '此金句已收藏', duplicate: true};
 }
@@ -66,6 +68,8 @@ export function loadCollection(input: unknown): CollectionData {
         record.anchor.block.slice(record.anchor.offset, record.anchor.offset + record.anchor.text.length) !== record.anchor.text ||
         (record.anchor.location !== undefined && (!record.anchor.location || !Number.isSafeInteger(record.anchor.location.start) ||
           record.anchor.location.start < record.anchor.offset || !/^[0-9a-f]{64}$/.test(record.anchor.location.digest))) ||
+        (record.originalContext !== undefined && (typeof record.originalContext !== 'string' || record.originalContext.length > 12000)) ||
+        (record.unlocated !== undefined && record.unlocated !== true) ||
         typeof record.context !== 'string' || record.context.length > 14400) throw new Error('收藏条目数据损坏。');
     if (record.pendingExplanation !== undefined) {
       const pending = record.pendingExplanation;
@@ -136,7 +140,7 @@ function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = fals
   text += `\n\n${quoted(result.translation)}`;
   if (record.kind === 'word') {
     if (headword !== record.anchor.text) text += `\n\n**原文词形** ${escapeMarkdown(record.anchor.text)}`;
-    text += `\n\n**原始语境**\n\n${quoted(context ?? shortContext(record.anchor))}`;
+    text += `\n\n**原始语境**\n\n${quoted(context ?? record.originalContext ?? shortContext(record.anchor))}`;
     for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
       if (value) text += `\n\n**${label}**\n\n${quoted(value)}`;
     }
@@ -219,11 +223,11 @@ async function digestText(text: string): Promise<string> {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function sidebarWordAnchor(selection: SidebarSelection): Anchor {
+function contextualAnchor(selection: {text: string; context: string; contextOffset?: number}): Anchor {
   const text = selection.text.trim();
   if (!text || selection.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
   const offset = selection.contextOffset;
-  if (!Number.isInteger(offset) || offset < 0 || selection.context.length > 14400 ||
+  if (offset === undefined || !Number.isInteger(offset) || offset < 0 || selection.context.length > 14400 ||
       selection.context.slice(offset, offset + selection.text.length) !== selection.text) {
     return {text, block:text, offset:0};
   }
@@ -244,7 +248,7 @@ async function matchingRecords(data: CollectionData, selection: SelectionSnapsho
     anchor.location = {start: range.offset, digest: await digestText(body)};
   }
   const matches = data.records.filter(record => {
-    if (record.documentId !== doc.id || record.kind !== kind) return false;
+    if (record.documentId !== doc.id || record.kind !== kind || record.unlocated) return false;
     const previous = record.anchor;
     const position = anchor.location && previous.location?.digest === anchor.location.digest
       ? previous.location.start : locateAnchor(body, previous);
@@ -287,7 +291,7 @@ export function compactLegacyCards(current: string, records: LearningRecord[], d
 }
 function appendRecord(current: string, record: LearningRecord, isSource: boolean): string {
   if (current.includes(`<!-- note-digest:record:${record.id} -->`)) return current;
-  if (isSource && !current.includes(LEARNING_BOUNDARY)) current += LEARNING_BOUNDARY + '## Note Digest 学习笔记\n';
+  if (isSource && !current.includes(LEARNING_BOUNDARY)) current += LEARNING_BOUNDARY + LEARNING_HEADING + '\n';
   return appendGrouped(current, record);
 }
 
@@ -309,7 +313,7 @@ export class CollectionStore {
   saveSidebarWord(selection: SidebarSelection, input: DigestResult): Promise<{text: string; duplicate: boolean}> {
     return this.queue(async () => {
       const result = validateResult(input, 'explain');
-      const anchor = sidebarWordAnchor(selection);
+      const anchor = contextualAnchor(selection);
       const key = JSON.stringify([anchor.text, anchor.block].map(value => value.replace(/\s+/g, ' ')));
       const id = await digestText(key);
       const marker = `<!-- note-digest:record:${id} -->`;
@@ -475,7 +479,6 @@ export class CollectionStore {
   save(selection: SelectionSnapshot, input: DigestResult, kind: Kind, target: SaveTarget): Promise<SaveReport> {
     return this.queue(async () => {
       if (!validPath(selection.path) || this.isLearningNote(selection.path)) throw new Error('请选择原文章，不要收藏生成的学习笔记。');
-      if (!canCollectSelection(selection)) throw new Error('无法确认收藏内容在原文中的位置。');
       const current = await this.port.read(selection.path);
       if (current === null || articleBody(current) !== articleBody(selection.source)) throw new Error('原文已修改或移动，请重新选择后收藏。');
       const result = validateResult(input, kind === 'word' ? 'explain' : 'translate');
@@ -486,11 +489,19 @@ export class CollectionStore {
         const name = selection.path.split('/').pop()!.replace(/\.md$/, '').replace(/[<>:"/\\|?*\[\]#^]/g, '-').slice(0, 48);
         doc = {id, path: selection.path, notePath: `Digest/文章学习/${name}--${id}.md`}; next.documents.push(doc);
       }
-      const {anchor,matches} = await matchingRecords(next,selection,kind,doc);
+      const located = canCollectSelection(selection);
+      const {anchor,matches} = located ? await matchingRecords(next,selection,kind,doc) : {
+        anchor: contextualAnchor(selection),
+        matches: next.records.filter(record => record.documentId === doc.id && record.kind === kind && record.unlocated &&
+          record.anchor.text === selection.text.trim() && record.context === selection.context),
+      };
       let record = matches.find(record => record.active && record.savedTo.length) ??
         matches.find(record => record.savedTo.length) ?? matches[0];
       if (!record) {
+        const originalContext = selection.contextOffset === undefined ? undefined :
+          shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
         record = {id: this.uuid(), documentId: doc.id, kind, anchor, context: selection.context,
+          originalContext, unlocated: located ? undefined : true,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
       }
       if (record.pendingExplanation) return {
@@ -500,10 +511,14 @@ export class CollectionStore {
       record.active = true; record.deletionPending = false;
       // Durable intent before external writes: retries retain identity even after a partial failure/crash.
       await this.commit(next);
-      const paths = target === 'both' ? [selection.path, doc.notePath] : [target === 'source' ? selection.path : doc.notePath];
+      const paths = !located || target === 'note' ? [doc.notePath] : target === 'both' ? [selection.path, doc.notePath] : [selection.path];
       const targets: SaveReport['targets'] = [];
       for (const path of paths) {
         try {
+          if (located && target === 'source' && path === doc.notePath) {
+            const latest = await this.port.read(selection.path);
+            if (latest === null || articleBody(latest) !== articleBody(selection.source)) throw new Error('原文已变化，请重新选择后重试。');
+          }
           let existed = false;
           await this.port.update(path, content => {
             const isSource = path === selection.path;
@@ -519,6 +534,7 @@ export class CollectionStore {
           targets.push({path, ok: true, message: existed ? '已收藏' : '已保存'});
         } catch (error) {
           targets.push({path, ok: false, message: error instanceof Error ? error.message : '保存失败，请重试'});
+          if (path === selection.path && !record.savedTo.includes(path) && !paths.includes(doc.notePath)) paths.push(doc.notePath);
         }
       }
       return {record: structuredClone(record), targets};

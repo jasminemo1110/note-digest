@@ -8,6 +8,7 @@ export function highlightRanges(source: string, lineStart: number, lineEnd: numb
   const sectionEnd = sectionStart + lines.slice(lineStart, lineEnd + 1).join('\n').length;
   const ranges: HighlightRange[] = [];
   for (const record of records) {
+    if (record.unlocated) continue;
     const position = locateAnchor(source, record.anchor);
     if (position === null || position < sectionStart || position + record.anchor.text.length > sectionEnd) continue;
     // Exact plain-text paragraph matching is deliberately conservative for rich Markdown.

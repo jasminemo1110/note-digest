@@ -95,7 +95,11 @@ export class DigestView extends ItemView {
       if (headword !== selection.text) el.createEl('p',{text:'原文词形：' + selection.text,cls:'note-digest-muted'});
       if (article) {
         let context = article.text;
-        try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+        if (article.contextOffset !== undefined) {
+          context = shortContext({block:article.context,offset:article.contextOffset,text:article.text});
+        } else {
+          try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
+        }
         el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
       } else if ('sidebar' in selection && selection.context) {
         const context = shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
@@ -122,7 +126,7 @@ export class DigestView extends ItemView {
       }
     }
     if (article) {
-      if (canCollectSelection(article)) this.renderSave(article,result,mode);
+      this.renderSave(article,result,mode);
       this.renderCollection(article.path);
     } else if ('sidebar' in selection && mode === 'explain') {
       this.renderSidebarSave(selection, result);
@@ -210,12 +214,19 @@ export class DigestView extends ItemView {
     if (!writes) parent.createEl('p',{text:'无法安全插入，译文保留在侧栏。',cls:'note-digest-muted'});
   }
   private renderSave(selection: SelectionSnapshot, result: DigestResult, mode: Action): void {
+    const located = canCollectSelection(selection);
     const el=this.contentEl.createDiv({cls:'note-digest-save'});
     el.createEl('h3',{text:'收藏到学习笔记'});
     const targetLabel=el.createEl('label',{text:'保存位置 '});
     const target=targetLabel.createEl('select',{attr:{'aria-label':'收藏保存位置'}});
-    for (const [value,text] of [['both','末尾及独立笔记'],['source','只有末尾'],['note','只有独立学习笔记']]) target.createEl('option',{value,text});
-    target.value='both';
+    if (located) {
+      target.createEl('option',{value:'both',text:'末尾及独立笔记'});
+      target.createEl('option',{value:'source',text:'只有末尾'});
+    } else {
+      el.createEl('p',{text:'无法确认选区在原文中的位置，仍可保存到独立学习笔记。',cls:'note-digest-muted'});
+    }
+    target.createEl('option',{value:'note',text:'只有独立学习笔记'});
+    target.value=located ? 'both' : 'note';
     let kind: HTMLSelectElement | undefined;
     if (mode==='explain') {
       const label=el.createEl('label',{text:'分类 '});
@@ -240,7 +251,7 @@ export class DigestView extends ItemView {
         if (message.isConnected) { this.renderCollection(selection.path); refreshUpdate(); }
       }
     };
-    if (mode === 'explain' && kind) {
+    if (mode === 'explain' && kind && located) {
       const updateArea = el.createDiv({cls:'note-digest-actions'});
       const category = kind;
       category.onchange = () => { updateArea.style.display = category.value === 'word' ? '' : 'none'; };
@@ -315,20 +326,24 @@ export class DigestView extends ItemView {
         const row=list.createDiv({cls:'note-digest-saved-row'});
         row.createEl('p',{text:record.kind === 'word' ? explanationHeadword(record.anchor.text,record.result) : record.anchor.text});
         row.createEl('p',{text:record.result.translation,cls:'note-digest-saved-translation'});
-        const locate=row.createEl('button',{text:'定位原文'});
-        locate.onclick=()=>{void this.plugin.revealRecord(path,record.id);};
+        let remove: HTMLButtonElement | undefined;
+        if (!record.unlocated) {
+          const locate=row.createEl('button',{text:'定位原文'});
+          locate.onclick=()=>{void this.plugin.revealRecord(path,record.id);};
+          const cancel=row.createEl('button',{text:'取消收藏高亮'});
+          cancel.disabled=!record.active;
+          cancel.onclick=async()=>{
+            cancel.disabled=true;
+            try { await this.plugin.removeHighlight(record.id);this.renderCollection(path); }
+            catch { cancel.disabled=false;cancel.textContent='取消失败，点击重试'; }
+          };
+          remove=cancel;
+        }
         if (!record.active) row.createEl('p',{text:record.deletionPending?'删除尚未完成，可重试':'已取消高亮，学习笔记保留',cls:'note-digest-muted'});
-        const remove=row.createEl('button',{text:'取消收藏高亮'});
-        remove.disabled=!record.active;
-        remove.onclick=async()=>{
-          remove.disabled=true;
-          try { await this.plugin.removeHighlight(record.id);this.renderCollection(path); }
-          catch { remove.disabled=false;remove.textContent='取消失败，点击重试'; }
-        };
-        const erase=row.createEl('button',{text:'取消高亮并删除笔记'});
+        const erase=row.createEl('button',{text:record.unlocated ? '删除学习卡片' : '取消高亮并删除笔记'});
         const message=row.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
         erase.onclick=async()=>{
-          erase.disabled=true;remove.disabled=true;message.textContent='正在检查并删除对应卡片…';
+          erase.disabled=true;if(remove) remove.disabled=true;message.textContent='正在检查并删除对应卡片…';
           try {
             const report=await this.plugin.removeNotes(record.id);
             this.renderCollection(path);

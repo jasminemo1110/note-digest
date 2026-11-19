@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, SIDEBAR_NOTE_PATH, type CollectionData, type StoragePort } from '../src/collection';
-import { snapshot, type DigestResult } from '../src/core';
+import { readingSnapshot, snapshot, type DigestResult } from '../src/core';
 import { articleBody, locateAnchor, LEARNING_BOUNDARY } from '../src/anchors';
 const source = '# Article\n\nA compelling argument.\n\nA compelling story.';
 const path = 'Articles/Learning.md';
@@ -19,6 +19,55 @@ function fixture(initial?: CollectionData) {
   return {files, store, port, durable: () => durable, fail: (value: string) => failPath=value, failPersist:(value:boolean) => persistFails=value};
 }
 const select = () => snapshot(path, source, 'compelling', source.indexOf('compelling'));
+test('a collection with a verified table position saves both full cards with the visible cell context', async () => {
+  const f = fixture();
+  const table = '| Prior | Current |\n| --- | --- |\n| Another compelling claim. | **Hotel:** A compelling example. |';
+  f.files.set(path, table);
+  const paragraph = 'Hotel: A compelling example.';
+  const offset = paragraph.indexOf('compelling');
+  const selection = readingSnapshot(path, table, 'compelling', {
+    section:{lineStart:0,lineEnd:2,text:table},paragraph,offset,cell:{row:1,column:1,rows:2,columns:2},
+  }, {text:paragraph,offset});
+  const saved = await f.store.save(selection,result,'word','both');
+  assert.equal(saved.targets.length, 2);
+  assert.deepEqual(saved.targets.map(target => target.ok), [true,true]);
+  assert.equal(locateAnchor(table,saved.record.anchor), table.lastIndexOf('compelling'));
+  for (const target of saved.targets) {
+    const card = f.files.get(target.path)!.split('**原始语境**')[1];
+    assert.match(card, /Hotel: A compelling example/);
+    assert.match(card, /语境含义/);
+    assert.doesNotMatch(card, /Another compelling claim/);
+  }
+  assert.equal(articleBody(f.files.get(path)!), table);
+});
+
+test('unresolved selections fall back to the article learning note without matching a different occurrence', async () => {
+  const f = fixture();
+  const context = 'An embedded compelling example.';
+  const unresolved = readingSnapshot(path, source, 'compelling', undefined, {text:context,offset:context.indexOf('compelling')});
+  const saved = await f.store.save(unresolved,result,'word','both');
+  assert.equal(saved.record.unlocated, true);
+  assert.equal(saved.targets.length, 1);
+  assert.equal(saved.targets[0].ok, true);
+  assert.equal(f.files.get(path), source);
+  assert.match(f.files.get(saved.targets[0].path)!, /An embedded compelling example/);
+  const restarted = new CollectionStore(loadCollection(f.durable()), f.port, () => 'another');
+  const duplicate = await restarted.save(unresolved,result,'word','source');
+  assert.equal(duplicate.record.id, saved.record.id);
+  assert.deepEqual(await restarted.matchingWords(select()), []);
+});
+
+test('if a source-only collection cannot append, it saves the same card in the learning note', async () => {
+  const f = fixture();
+  f.fail(path);
+  const saved = await f.store.save(select(),result,'word','source');
+  assert.deepEqual(saved.targets.map(target => target.ok), [false,true]);
+  assert.equal(f.files.get(path), source);
+  f.fail('');
+  const retry = await f.store.save(select(),result,'word','both');
+  assert.equal(retry.record.id, saved.record.id);
+  assert.deepEqual(retry.targets.map(target => target.message), ['已保存','已收藏']);
+});
 test('normalized cards use the base headword in both targets and keep original anchors across reload', async () => {
   const f=fixture();
   const original='Interpreting Research Findings';

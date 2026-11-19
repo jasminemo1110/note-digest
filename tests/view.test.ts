@@ -176,12 +176,18 @@ test('late insertion response cannot replace a newer selected word in the sideba
 });
 
 
-test('an unresolved reading selection displays its translation without insert or save controls', () => {
-  const {view,document} = setup();
-  const selection = readingSnapshot('a.md', 'An unrelated example.', 'example');
-  view.render(selection, {translation:'例子'});
-  assert.match(document.body.textContent!, /例子/);
-  assert.equal(document.querySelector('.note-digest-insert, .note-digest-save'), null);
+test('an unresolved reading selection retains contextual explanation and can save only to its learning note', async () => {
+  const {view,document,calls} = setup();
+  const selection = readingSnapshot('a.md', 'An unrelated example.', 'example', undefined, {text:'A visible example.',offset:10});
+  view.render(selection, explained, '', 'explain');
+  assert.equal(document.querySelector('blockquote')?.textContent, 'A visible example.');
+  assert.equal(document.querySelector('.note-digest-insert'), null);
+  const destinations = document.querySelector<HTMLSelectElement>('[aria-label="收藏保存位置"]')!;
+  assert.deepEqual(Array.from(destinations.options, option => option.value), ['note']);
+  const save = document.querySelector<HTMLButtonElement>('.note-digest-save button')!;
+  assert.equal(calls.length, 0);
+  await save.onclick!(new (domEvent(document))('click') as any);
+  assert.deepEqual(calls[0], ['collect',selection,explained,'word','note']);
 });
 
 test('sidebar explanation reuses the captured context and saves only after clicking its notebook action', async () => {

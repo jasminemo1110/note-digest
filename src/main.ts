@@ -8,9 +8,10 @@ import { DigestView, VIEW_TYPE } from './view';
 import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges } from './highlights';
-import { locateAnchor } from './anchors';
+import { articleBody, locateAnchor } from './anchors';
 import type { DigestResult } from './core';
-import { isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
+import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
+import type { RenderedSection, TableCellPosition } from './markdown-source';
 import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
 
 export default class NoteDigestPlugin extends Plugin {
@@ -21,7 +22,7 @@ export default class NoteDigestPlugin extends Plugin {
   private stopped = false;
   private quoteBusy = false;
   private summaryJob?: { generation: number; path: string; cancelled: boolean };
-  private renderedSections = new WeakMap<HTMLElement, {path: string; lineStart: number; lineEnd: number; text: string}>();
+  private renderedSections = new WeakMap<HTMLElement, RenderedSection & {path: string}>();
   private selectionButton?: HTMLButtonElement;
   private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
   private calloutBusy = false;
@@ -45,14 +46,13 @@ export default class NoteDigestPlugin extends Plugin {
     });
     this.registerDomEvent(document, 'keydown', event => {
       if (!/^[dn]$/i.test(event.key)) return;
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
+      const view = this.articleViewForSelection(selection);
       const sidebar = this.readSidebarSelection(selection, false);
       const target = event.target instanceof Element ? event.target : null;
       const action = readingShortcut(event, {
         reading: !!sidebar || view?.getMode() === 'preview',
-        selectionInside: !!sidebar || !!(view && selection?.toString().trim() && selection.anchorNode && selection.focusNode &&
-          view.contentEl.contains(selection.anchorNode) && view.contentEl.contains(selection.focusNode)),
+        selectionInside: !!sidebar || !!view,
         editable: isSelectionControl(target) || !!document.querySelector('.modal-container'),
       });
       if (!action || (sidebar && action === 'quote')) return;
@@ -63,11 +63,9 @@ export default class NoteDigestPlugin extends Plugin {
       if (this.selectionButton?.contains(event.target as Node)) return;
       this.rememberCalloutSource(event.target);
       this.removeSelectionButton();
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       const selection = window.getSelection();
       if (!selection || !selection.rangeCount) return;
-      if (!this.readSidebarSelection(selection, false) && (!view || !selection.toString().trim() || !selection.anchorNode || !selection.focusNode ||
-          !view.contentEl.contains(selection.anchorNode) || !view.contentEl.contains(selection.focusNode))) return;
+      if (!this.readSidebarSelection(selection, false) && !this.articleViewForSelection(selection)) return;
       const rect = selection.getRangeAt(0).getBoundingClientRect();
       const button = document.body.createEl('button', { text: 'Digest', cls: 'note-digest-selection' });
       button.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 100)) + 'px';
@@ -142,7 +140,7 @@ export default class NoteDigestPlugin extends Plugin {
   async revealRecord(path: string, id: string): Promise<void> {
     const record = this.collection.recordsFor(path,true).find(record => record.id === id);
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (!record || !(file instanceof TFile)) { new Notice('原文不可用。'); return; }
+    if (!record || record.unlocated || !(file instanceof TFile)) { new Notice('原文位置不可用。'); return; }
     const source = await this.app.vault.read(file);
     const offset = locateAnchor(source, record.anchor);
     if (offset === null) { new Notice('原段落已变化或有重复，无法准确定位；收藏快照仍保留。'); return; }
@@ -294,42 +292,68 @@ export default class NoteDigestPlugin extends Plugin {
     });
     return selected;
   }
+  private articleViewForSelection(selection: Selection | null): MarkdownView | undefined {
+    if (!selection?.anchorNode || !selection.focusNode || !selection.toString().trim()) return;
+    const {anchorNode, focusNode} = selection;
+    return this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view).find(
+      (view): view is MarkdownView => view instanceof MarkdownView && view.contentEl.contains(anchorNode) && view.contentEl.contains(focusNode),
+    );
+  }
   private async readArticleSelection(): Promise<SelectionSnapshot> {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const selection = window.getSelection();
+    const selectionView = this.articleViewForSelection(selection);
+    const view = selectionView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view?.file) throw new Error('请在 Markdown 文章或侧栏中选择英文。');
-    const path = view.file.path;
+    const file = view.file;
+    const path = file.path;
     if (this.collection.isLearningNote(path)) throw new Error('请从原文章选择内容。');
-    const range = window.getSelection();
-    const inside = range?.anchorNode && range.focusNode &&
-      view.contentEl.contains(range.anchorNode) && view.contentEl.contains(range.focusNode);
-    if (range?.toString().trim() && !inside) throw new Error('请在同一个侧栏视图或 Markdown 原文中选择英文。');
-    if (view.getMode() === 'source') {
-      return snapshot(path, view.editor.getValue(), view.editor.getSelection(), view.editor.posToOffset(view.editor.getCursor('from')));
-    }
-    if (!inside || !range?.rangeCount) throw new Error('请在原文中选择英文。');
-    const text = range.toString();
-    const nativeRange = range.getRangeAt(0).cloneRange();
-    const parent = nativeRange.startContainer.nodeType === 1 ? nativeRange.startContainer as Element : nativeRange.startContainer.parentElement;
-    const paragraph = parent?.closest('p');
-    let sectionElement: HTMLElement | null = paragraph ?? null;
-    while (sectionElement && !this.renderedSections.has(sectionElement)) sectionElement = sectionElement.parentElement;
-    const section = sectionElement ? this.renderedSections.get(sectionElement) : undefined;
-    let rendered: Parameters<typeof readingSnapshot>[3];
-    if (paragraph && sectionElement && section?.path === path &&
-        !paragraph.closest('.internal-embed, .markdown-embed, blockquote, li, table') && paragraph.contains(nativeRange.endContainer)) {
-      const paragraphText = paragraph.textContent ?? '';
-      const normalizedParagraph = paragraphText.replace(/[ \t\r\n]+/g, ' ');
-      const matching = Array.from(sectionElement.querySelectorAll('p'))
-        .filter(other => other.textContent?.replace(/[ \t\r\n]+/g, ' ') === normalizedParagraph);
-      if (sectionElement === paragraph || (matching.length === 1 && matching[0] === paragraph)) {
-        const prefix = nativeRange.cloneRange();
-        prefix.selectNodeContents(paragraph);
-        prefix.setEnd(nativeRange.startContainer, nativeRange.startOffset);
-        rendered = {section, paragraph: paragraphText, offset: prefix.toString().length};
+    const domText = selection?.toString() ?? '';
+    if (domText.trim() && !selectionView) throw new Error('请在同一个侧栏视图或 Markdown 原文中选择英文。');
+    const capture = selectionView && selection?.rangeCount === 1
+      ? articleRange(selection.getRangeAt(0), view.contentEl, domText) : undefined;
+    const block = capture?.block;
+    const widget = block?.closest<HTMLElement>('.cm-table-widget');
+    const editing = view.getMode() === 'source';
+    const source = editing ? view.editor.getValue() : undefined;
+    if (source !== undefined && !widget) {
+      const text = view.editor.getSelection();
+      const offset = view.editor.posToOffset(view.editor.getCursor('from'));
+      if (!capture || (text === domText && source.slice(offset, offset + text.length) === text)) {
+        return snapshot(path, source, text, offset);
       }
     }
-    const source = await this.app.vault.read(view.file);
-    return readingSnapshot(path, source, text, rendered);
+    if (!capture) throw new Error('请在原文中选择英文。');
+    let rendered: Parameters<typeof readingSnapshot>[3];
+    if (block && !block.closest('.internal-embed, .markdown-embed')) {
+      const table = block.closest('table');
+      let sectionElement = table ?? block;
+      while (!this.renderedSections.has(sectionElement) && sectionElement.parentElement && sectionElement !== view.contentEl) {
+        sectionElement = sectionElement.parentElement;
+      }
+      const section = this.renderedSections.get(sectionElement);
+      const tag = block.localName;
+      const row = table ? (block as HTMLTableCellElement).parentElement as HTMLTableRowElement | null : null;
+      let cell: TableCellPosition | undefined;
+      if (table && row && (tag === 'td' || tag === 'th') && table.rows[row.rowIndex] === row &&
+          Array.from(table.rows).every(row => Array.from(row.cells).every(cell => cell.rowSpan === 1 && cell.colSpan === 1))) {
+        cell = {row: row.rowIndex, column: (block as HTMLTableCellElement).cellIndex, rows: table.rows.length, columns: table.rows[0].cells.length};
+        if (editing && widget) {
+          const cm = (view.editor as typeof view.editor & {cm?: {posAtDOM(node: Node): number}}).cm;
+          // Live Preview uses a nested cell editor. Ask CodeMirror for the enclosing widget's source position.
+          try { cell.widgetStart = cm?.posAtDOM(widget); } catch { /* The widget can be replaced by a render. */ }
+        }
+      }
+      const singleTable = !table || sectionElement === table || sectionElement.querySelectorAll('table').length === 1;
+      if ((section?.path === path || cell?.widgetStart !== undefined) && (!table || cell) && (singleTable || widget)) {
+        rendered = {section: section?.path === path ? section : undefined, paragraph: capture.text, offset: capture.offset, tag, cell};
+      }
+    }
+    const body = source ?? await this.app.vault.read(file);
+    const checkedSection = rendered?.section;
+    if (checkedSection && checkedSection.lineStart >= articleBody(body).split('\n').length) {
+      throw new Error('请从原文章选择内容，不要收藏生成的学习区。');
+    }
+    return readingSnapshot(path, body, domText, rendered, capture.context);
   }
   private async capture(action: 'digest' | 'quote' = 'digest'): Promise<void> {
     if (action === 'quote' && this.quoteBusy) return;
@@ -346,8 +370,7 @@ export default class NoteDigestPlugin extends Plugin {
         if (generation === this.generation && !this.stopped) panel.render(selected,undefined,'','idle');
         return;
       }
-      const quote = action === 'quote' && 'path' in selected && canCollectSelection(selected) ? selected : undefined;
-      if (action === 'quote' && !quote) new Notice('无法确认原文位置，译文仅显示在侧栏。');
+      const quote = action === 'quote' && 'path' in selected ? selected : undefined;
       const requestGeneration = this.generation + 1;
       const result = await this.run(selected, 'translate');
       if (quote && result && requestGeneration === this.generation && !this.stopped) {

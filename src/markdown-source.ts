@@ -1,16 +1,22 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
-import type { Nodes, Paragraph, PhrasingContent, Root, Text } from 'mdast';
-import { LEARNING_BOUNDARY } from './anchors';
+import { gfmTableFromMarkdown } from 'mdast-util-gfm-table';
+import { gfmTable } from 'micromark-extension-gfm-table';
+import type { Nodes, Paragraph, PhrasingContent, Root, Table, Text } from 'mdast';
+import { articleBody } from './anchors';
 
 export interface SourceRange { start: number; end: number }
+export interface RenderedSection { lineStart: number; lineEnd: number; text: string }
+export interface TableCellPosition { row: number; column: number; rows: number; columns: number; widgetStart?: number }
+type ReadingBlock = Extract<Nodes, {type: 'paragraph' | 'heading' | 'tableCell'}>;
+
+const tableExtensions = {extensions: [gfmTable()], mdastExtensions: [gfmTableFromMarkdown()]};
 
 export function markdownBody(source: string): Root {
-  const boundary = source.indexOf(LEARNING_BOUNDARY);
-  const body = source.slice(0, boundary < 0 ? source.length : boundary).replace(
+  const body = articleBody(source).replace(
     /^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/,
     properties => properties.replace(/[^\r\n]/g, ' '),
   );
-  return fromMarkdown(body);
+  return fromMarkdown(body, tableExtensions);
 }
 
 function range(node: Nodes): SourceRange {
@@ -19,6 +25,18 @@ function range(node: Nodes): SourceRange {
 
 function contains(outer: SourceRange, inner: SourceRange): boolean {
   return outer.start <= inner.start && outer.end >= inner.end;
+}
+
+export function tableCellSourceRange(source: string, selection: SourceRange): SourceRange | undefined {
+  const lineStart = source.lastIndexOf('\n', selection.start - 1) + 1;
+  const lineEnd = source.indexOf('\n', selection.end);
+  if (!source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).includes('|')) return;
+  for (const node of markdownBody(source).children) {
+    if (node.type !== 'table' || !contains(range(node), selection)) continue;
+    const row = node.children.find(row => contains(range(row), selection));
+    const cell = row?.children.find(cell => contains(range(cell), selection));
+    if (cell) return range(cell);
+  }
 }
 
 function visible(node: PhrasingContent): string | undefined {
@@ -69,43 +87,71 @@ function visiblePoint(source: string, children: PhrasingContent[], point: number
   }
 }
 
-function isSupported(source: string, paragraph: Paragraph): boolean {
-  const {start, end} = range(paragraph);
+function isSupported(source: string, block: ReadingBlock): boolean {
+  const {start, end} = range(block);
   // Obsidian syntax outside CommonMark can change how this text is rendered.
-  return !/\[\[|%%|\$|==|~~|\||(?:^|\s)\^[\w-]+\s*$|(?:^|\s)#[\w/-]+/m.test(source.slice(start, end)) &&
+  const raw = source.slice(start, end);
+  return (block.type === 'tableCell' || !raw.includes('|')) &&
+    !/\[\[|%%|\$|==|~~|(?:^|\s)\^[\w-]+\s*$|(?:^|\s)#[\w/-]+/m.test(raw) &&
     ((source.slice(0, start).match(/%%/g)?.length ?? 0) % 2 === 0) &&
     ((source.slice(0, start).match(/^ {0,3}\$\$[ \t]*\r?$/gm)?.length ?? 0) % 2 === 0) &&
-    visibleChildren(paragraph.children) !== undefined;
+    visibleChildren(block.children) !== undefined;
 }
 
-export function mapReadingRange(source: string, section: {lineStart: number; lineEnd: number; text: string},
-  paragraphText: string, localOffset: number, text: string): SourceRange | undefined {
-  if (!text.trim() || paragraphText.slice(localOffset, localOffset + text.length) !== text) return;
+function sectionRange(source: string, section: RenderedSection): SourceRange | undefined {
   const lines = source.split('\n');
   const sectionStart = lines.slice(0, section.lineStart).reduce((offset, line) => offset + line.length + 1, 0);
   const sectionSource = lines.slice(section.lineStart, section.lineEnd + 1).join('\n');
   const sameText = (left: string, right: string) => left.replace(/\r\n/g, '\n') === right.replace(/\r\n/g, '\n');
   if (!sameText(section.text, source) && !sameText(section.text, sectionSource) && !sameText(section.text, sectionSource + '\n')) return;
 
-  const sectionRange = {start: sectionStart, end: sectionStart + sectionSource.length};
-  const sectionNodes = markdownBody(source).children.filter(node =>
-    range(node).start < sectionRange.end && range(node).end > sectionRange.start);
-  const paragraphs = sectionNodes.filter((node): node is Paragraph => node.type === 'paragraph');
-  if (paragraphs.length !== sectionNodes.length ||
-      paragraphs.some(node => !contains(sectionRange, range(node)) || !isSupported(source, node))) return;
-  const candidates = paragraphs.filter(node => normalized(visibleChildren(node.children)!) === normalized(paragraphText));
+  return {start: sectionStart, end: sectionStart + sectionSource.length};
+}
+
+function readingBlocks(node: Nodes): ReadingBlock[] {
+  if (node.type === 'paragraph' || node.type === 'heading') return [node];
+  if (node.type === 'blockquote' || node.type === 'list' || node.type === 'listItem') return node.children.flatMap(readingBlocks);
+  return [];
+}
+
+export function mapReadingRange(source: string, section: RenderedSection | undefined,
+  blockText: string, localOffset: number, text: string, cell?: TableCellPosition, tag?: string): SourceRange | undefined {
+  if (!text.trim() || blockText.slice(localOffset, localOffset + text.length) !== text) return;
+  const bounds = section && sectionRange(source, section);
+  if (!bounds && cell?.widgetStart === undefined) return;
+  const nodes = markdownBody(source).children;
+  let candidates: ReadingBlock[];
+  if (cell) {
+    const tables = nodes.filter((node): node is Table => node.type === 'table' && (cell.widgetStart !== undefined
+      ? range(node).start === cell.widgetStart
+      : !!bounds && contains(bounds, range(node))));
+    if (tables.length !== 1) return;
+    const table = tables[0];
+    if (table.children.length !== cell.rows || table.children[0].children.length !== cell.columns) return;
+    const tableCell = table.children[cell.row]?.children[cell.column];
+    if (!tableCell) return;
+    const raw = range(tableCell);
+    if (cell.widgetStart !== undefined && source.slice(raw.start, raw.end) === blockText) {
+      return {start: raw.start + localOffset, end: raw.start + localOffset + text.length};
+    }
+    candidates = [tableCell];
+  } else {
+    candidates = nodes.filter(node => contains(bounds!, range(node))).flatMap(readingBlocks)
+      .filter(node => !tag || (node.type === 'heading' ? tag === `h${node.depth}` : !/^h[1-6]$/.test(tag)));
+  }
+  candidates = candidates.filter(node => isSupported(source, node) && normalized(visibleChildren(node.children)!) === normalized(blockText));
   if (candidates.length !== 1) return;
-  const paragraph = candidates[0];
-  const rendered = visibleChildren(paragraph.children)!;
-  const coordinates = (point: number) => normalized(paragraphText.slice(0, point)).length;
+  const {children} = candidates[0];
+  const rendered = visibleChildren(children)!;
+  const coordinates = (point: number) => normalized(blockText.slice(0, point)).length;
   const offsets = [...rendered.matchAll(/[ \t\r\n]+|[^ \t\r\n]/g)].map(match => ({
     start: match.index, end: match.index + match[0].length,
   }));
   const first = offsets[coordinates(localOffset)];
   const last = offsets[coordinates(localOffset + text.length) - 1];
   if (!first || !last) return;
-  const start = visiblePoint(source, paragraph.children, first.start, 'start');
-  const end = visiblePoint(source, paragraph.children, last.end, 'end');
+  const start = visiblePoint(source, children, first.start, 'start');
+  const end = visiblePoint(source, children, last.end, 'end');
   if (start !== undefined && end !== undefined && end > start) return {start, end};
 }
 

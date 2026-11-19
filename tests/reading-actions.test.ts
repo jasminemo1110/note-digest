@@ -1,8 +1,22 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
-import {sidebarSelection, readingShortcut, shortContext} from '../src/reading-actions';
+import {articleRange, sidebarSelection, readingShortcut, shortContext} from '../src/reading-actions';
 import {makeAnchor} from '../src/anchors';
+
+test('article context uses the actual occurrence in its cell and excludes adjacent cells', () => {
+  const {document} = new JSDOM('<main><table><tr><td>Other confirmation</td><td><strong>Hotel:</strong> Received the confirmation email.</td></tr></table></main>').window;
+  const cell = document.querySelector('td + td')!;
+  const target = cell.lastChild!;
+  const offset = target.textContent!.indexOf('confirmation');
+  const range = document.createRange();
+  range.setStart(target, offset);
+  range.setEnd(target, offset + 'confirmation'.length);
+  const captured = articleRange(range, document.querySelector('main')!, 'confirmation');
+  assert.equal(captured.block, cell);
+  assert.equal(captured.context.text, 'Hotel: Received the confirmation email.');
+  assert.equal(captured.context.offset, captured.context.text.indexOf('confirmation'));
+});
 
 test('display context stays in selected paragraph and includes at most two nearby sentences',()=>{
   const source='Unrelated earlier paragraph.\n\nFirst sentence. New ideas emerge slowly. Another sentence. Final sentence.\n\nUnrelated later paragraph.';

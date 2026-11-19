@@ -1,10 +1,11 @@
 import { articleBody } from './anchors';
-import { insertionTarget, markdownBody, markdownStructure, mapReadingRange } from './markdown-source';
+import { insertionTarget, markdownBody, markdownStructure, mapReadingRange, tableCellSourceRange, type RenderedSection, type TableCellPosition } from './markdown-source';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 export type SourceLanguage = 'en' | 'ja';
 export type Action = 'translate' | 'explain' | 'summarize';
 export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string; readOnly?: true;
+  contextOffset?: number;
 }
 export interface SidebarSelection {
   sidebar: true; text: string; context: string; contextOffset: number;
@@ -45,21 +46,30 @@ export function snapshot(path: string, source: string, text: string, offset?: nu
   const start = offset ?? body.indexOf(text);
   if (!Number.isInteger(start) || start < 0 || body.slice(start, start + text.length) !== text) throw new Error('无法对应原文，请改用编辑模式重新选择。');
   if (offset === undefined && body.indexOf(text, start + 1) !== -1) throw new Error('原文有多处相同文本，请改用编辑模式精确选择。');
-  return { path, source, text, start, end: start + text.length,
-    context: body.slice(Math.max(0, start - 1200), Math.min(body.length, start + text.length + 1200)) };
+  const end = start + text.length;
+  const cell = tableCellSourceRange(source, {start, end});
+  const contextStart = Math.max(cell?.start ?? 0, start - 1200);
+  const context = body.slice(contextStart, Math.min(cell?.end ?? body.length, end + 1200));
+  return {path, source, text, start, end, context, contextOffset: cell ? start - contextStart : undefined};
 }
 export function readingSnapshot(path: string, source: string, text: string,
-  rendered?: {section: Parameters<typeof mapReadingRange>[1]; paragraph: string; offset: number}): SelectionSnapshot {
+  rendered?: {section?: RenderedSection; paragraph: string; offset: number; cell?: TableCellPosition; tag?: string},
+  visibleContext?: {text: string; offset: number}): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
-  const mapped = rendered && mapReadingRange(source, rendered.section, rendered.paragraph, rendered.offset, text);
-  if (!mapped) return {path, source, text, start: -1, end: -1, context: rendered?.paragraph.slice(Math.max(0, rendered.offset - 1200), rendered.offset + text.length + 1200) ?? text, readOnly: true};
+  const mapped = rendered && mapReadingRange(source, rendered.section, rendered.paragraph, rendered.offset, text, rendered.cell, rendered.tag);
+  const body = articleBody(source);
+  if (!mapped || mapped.end > body.length) {
+    return {path, source, text, start: -1, end: -1, context: visibleContext?.text ?? text,
+      contextOffset: visibleContext?.offset ?? 0, readOnly: true};
+  }
   const {start, end} = mapped;
-  return {path, source, text, start, end, context: articleBody(source).slice(Math.max(0, start - 1200), end + 1200)};
+  return {path, source, text, start, end, context: visibleContext?.text ?? body.slice(Math.max(0, start - 1200), end + 1200),
+    contextOffset: visibleContext?.offset};
 }
 
 export function canCollectSelection(selection: SelectionSnapshot): boolean {
   return !selection.readOnly && selection.start >= 0 && selection.end === selection.start + selection.text.length &&
-    selection.source.slice(selection.start, selection.end) === selection.text;
+    articleBody(selection.source).slice(selection.start, selection.end) === selection.text;
 }
 
 export function validateResult(value: unknown, action: Action): DigestResult {

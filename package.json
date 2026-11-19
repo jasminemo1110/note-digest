@@ -1,6 +1,6 @@
 {
   "name": "note-digest",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "private": true,
   "description": "Contextual reading and learning inside Obsidian",
   "type": "module",
@@ -19,6 +19,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "mdast-util-from-markdown": "^2.1.0"
+    "mdast-util-from-markdown": "^2.1.0",
+    "mdast-util-gfm-table": "^2.0.1",
+    "micromark-extension-gfm-table": "^2.1.2"
   }
 }
