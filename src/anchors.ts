@@ -1,9 +1,15 @@
 /** Generated learning sections never become source material or contextual matches. */
 export const LEARNING_BOUNDARY = '\n\n<!-- note-digest:learning -->\n';
 export const LEARNING_HEADING = '## Note Digest 学习笔记';
+const learningSectionHeading = '\n\n' + LEARNING_HEADING;
 export function articleBody(source: string): string {
   const boundary = source.indexOf(LEARNING_BOUNDARY);
   if (boundary < 0) return source.trimEnd();
+  const headingStart = boundary - learningSectionHeading.length;
+  // A marker below the heading stays inside that section when reordered in Outline.
+  if (headingStart >= 0 && source.startsWith(learningSectionHeading, headingStart)) {
+    return source.slice(0, headingStart).trimEnd();
+  }
   const afterMarker = boundary + LEARNING_BOUNDARY.length;
   // Content can be inserted between the hidden marker and the generated heading in a rendered editor.
   const tail = source.slice(afterMarker);

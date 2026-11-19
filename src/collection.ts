@@ -287,7 +287,7 @@ export function compactLegacyCards(current: string, records: LearningRecord[], d
 }
 function appendRecord(current: string, record: LearningRecord, isSource: boolean): string {
   if (current.includes(`<!-- note-digest:record:${record.id} -->`)) return current;
-  if (isSource && !current.includes(LEARNING_BOUNDARY)) current += LEARNING_BOUNDARY + LEARNING_HEADING + '\n';
+  if (isSource && !current.includes(LEARNING_BOUNDARY)) current += '\n\n' + LEARNING_HEADING + LEARNING_BOUNDARY;
   return appendGrouped(current, record);
 }
 

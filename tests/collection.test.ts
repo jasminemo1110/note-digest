@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, SIDEBAR_NOTE_PATH, type CollectionData, type StoragePort } from '../src/collection';
 import { readingSnapshot, snapshot, type DigestResult } from '../src/core';
-import { articleBody, locateAnchor, LEARNING_BOUNDARY } from '../src/anchors';
+import { articleBody, locateAnchor, LEARNING_BOUNDARY, LEARNING_HEADING } from '../src/anchors';
 const source = '# Article\n\nA compelling argument.\n\nA compelling story.';
 const path = 'Articles/Learning.md';
 const result: DigestResult = { translation:'有说服力的', pronunciation:'/kəmˈpelɪŋ/', meaning:'形容论点令人信服', usage:'a compelling argument\n另一个搭配', example:'It is compelling. 它令人信服。', assessment:{status:'natural', explanation:'搭配自然', correction:null} };
@@ -19,6 +19,23 @@ function fixture(initial?: CollectionData) {
   return {files, store, port, durable: () => durable, fail: (value: string) => failPath=value, failPersist:(value:boolean) => persistFails=value};
 }
 const select = () => snapshot(path, source, 'compelling', source.indexOf('compelling'));
+test('a new learning marker belongs below its heading and keeps a section moved above it in the body', async () => {
+  const f = fixture();
+  await f.store.save(select(), result, 'word', 'source');
+  const current = f.files.get(path)!;
+  assert.ok(current.includes(LEARNING_HEADING + LEARNING_BOUNDARY));
+  assert.equal(articleBody(current), source);
+  const heading = current.indexOf(LEARNING_HEADING);
+  const movedSection = '## Evening practice\n\nAn email confirmation arrived.\n\n';
+  const reordered = current.slice(0, heading) + movedSection + current.slice(heading);
+  assert.equal(articleBody(reordered), `${source}\n\n${movedSection.trimEnd()}`);
+  const selected = snapshot(path, reordered, 'confirmation');
+  f.files.set(path, reordered);
+  const saved = await f.store.save(selected,result,'word','source');
+  assert.equal(saved.targets[0].ok, true);
+  assert.equal(f.files.get(path)!.split('<!-- note-digest:learning -->').length, 2);
+});
+
 test('a collection with a verified table position saves both full cards with the visible cell context', async () => {
   const f = fixture();
   const table = '| Prior | Current |\n| --- | --- |\n| Another compelling claim. | **Hotel:** A compelling example. |';
