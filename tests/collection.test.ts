@@ -24,23 +24,26 @@ test('normalized cards use the base headword in both targets and keep original a
   const original='Interpreting Research Findings';
   f.files.set(path,original);
   const selection=snapshot(path,original,'Interpreting');
-  const explanation={...result,headword:'interpret',translation:'解读',pronunciation:'/ɪnˈtɜːprɪt/'};
+  const commonUsages=[{partOfSpeech:'动词',meaning:'口译',example:'interpret for a guest（为一位客人口译）'}];
+  const explanation={...result,headword:'interpret',translation:'解读',pronunciation:'/ɪnˈtɜːprɪt/',commonUsages};
   const saved=await f.store.save(selection,explanation,'word','both');
   for (const target of saved.targets) {
     const text=f.files.get(target.path)!;
     assert.match(text,/#### interpret\n/);
     assert.match(text,/\*\*原文词形\*\* Interpreting/);
     assert.ok(text.includes('Interpreting Research Findings'));
+    assert.match(text,/\*\*其他常见用法\*\*\n\n- \*\*动词 · 口译\*\* — interpret for a guest/);
   }
   const record=loadCollection(f.durable()).records[0];
   assert.equal(record.result.headword,'interpret');
+  assert.deepEqual(record.result.commonUsages,commonUsages);
   assert.equal(record.anchor.text,'Interpreting');
   assert.equal(locateAnchor(original,record.anchor),0);
   const duplicate=await f.store.save(selection,explanation,'word','both');
   assert.equal(duplicate.record.id,saved.record.id);
   const sidebar=await f.store.saveSidebarWord({sidebar:true,text:'Interpreting',context:original,contextOffset:0},explanation);
   assert.equal(sidebar.duplicate,false);
-  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!,/#### interpret\n/);
+  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!,/#### interpret\n[\s\S]*其他常见用法[\s\S]*interpret for a guest/);
 });
 
 test('explicit update changes an old inflected title in both copies and preserves manual notes', async () => {
@@ -52,11 +55,13 @@ test('explicit update changes an old inflected title in both copies and preserve
   for (const {path:target} of saved.targets) {
     f.files.set(target,f.files.get(target)!.replace('**音标**','我的备注\n\n**音标**'));
   }
-  await f.store.updateExplanation(selection,saved.record.id,{...result,headword:'interpret'});
+  const commonUsages=[{partOfSpeech:'动词',meaning:'口译',example:'interpret for a guest（为一位客人口译）'}];
+  await f.store.updateExplanation(selection,saved.record.id,{...result,headword:'interpret',commonUsages});
   for (const {path:target} of saved.targets) {
     assert.match(f.files.get(target)!,/#### interpret\n/);
     assert.match(f.files.get(target)!,/我的备注/);
     assert.match(f.files.get(target)!,/\*\*原文词形\*\* Interpreting/);
+    assert.match(f.files.get(target)!,/其他常见用法[\s\S]*interpret for a guest/);
   }
   await f.store.removeNotes(saved.record.id);
   assert.equal(articleBody(f.files.get(path)!),original);

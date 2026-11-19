@@ -51,7 +51,8 @@ test('explanation request asks for IPA and distinguishes errors from register; r
 
 test('inflected lookup teaches the base headword without changing the quoted source payload', async () => {
   const selection = snapshot('a.md', 'Interpreting Research Findings', 'Interpreting');
-  const explanation = {headword:'interpret', translation:'解读；解释', meaning:'interpret 表示解读。原文 Interpreting 是其 -ing 形式，用于标题。', usage:'interpret findings 解读研究结果', example:'We interpret the data. 我们解读数据。', pronunciation:'/ɪnˈtɜːprɪt/', assessment:{status:'natural', explanation:'标题用法自然。', correction:null}};
+  const explanation = {headword:'interpret', translation:'解读；解释', meaning:'interpret 表示解读。原文 Interpreting 是其 -ing 形式，用于标题。', usage:'interpret findings 解读研究结果', example:'We interpret the data. 我们解读数据。', pronunciation:'/ɪnˈtɜːprɪt/', assessment:{status:'natural', explanation:'标题用法自然。', correction:null},
+    commonUsages:[{partOfSpeech:'动词',meaning:'口译',example:'interpret for a guest（为一位客人口译）'}]};
   const response = await digest(selection, 'explain', credential, async request => {
     const body = JSON.parse(request.body as string);
     const prompt = body.messages[0].content;
@@ -60,6 +61,8 @@ test('inflected lookup teaches the base headword without changing the quoted sou
     assert.match(prompt, /Keep lexical adjectives/);
     assert.match(prompt, /pronunciation for the headword/);
     assert.match(prompt, /explicitly explain the original form/);
+    assert.match(prompt, /Exclude the current sense/);
+    assert.match(prompt, /Prefer one good entry to padding the list/);
     assert.deepEqual(JSON.parse(body.messages[1].content), {selected:'Interpreting', context:selection.context});
     return {status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(explanation)}}]}};
   });

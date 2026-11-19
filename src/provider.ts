@@ -1,7 +1,7 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 import type { ArticleSummary, SectionSummary } from './article-summary';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
-import { validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
+import { MAX_COMMON_USAGES, validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
 
 export function languageInstruction(language: SourceLanguage): string {
   if (language !== 'en') throw new Error('日语将在第二版提供。');
@@ -18,7 +18,8 @@ Return assessment as an object with status, explanation, correction. status must
 Assess the selected expression as used in its sentence. Distinguish definite spelling/grammar/word-choice errors (incorrect), understandable but awkward phrasing (unnatural), valid colloquial/dialectal/register variants (informal), normal usage (natural), and missing or ambiguous evidence (uncertain).
 explanation is a nonempty Chinese explanation grounded in the supplied context; identify the offending text and why when there is an error. Do not mistake informal language, quotation, dialect, or style preference for an error. Do not critique unrelated surrounding sentences.
 correction must be a minimal corrected English expression or sentence for incorrect/unnatural; may offer a more formal equivalent for informal, explicitly as an alternative, not an error correction; must be null for natural/uncertain. Do not silently replace the original selected text or translate only a corrected form. Explain original intent and the correction separately.
-usage should cover relevant patterns and collocations with context-appropriate examples, clearly separating contextual meaning from other possible senses. example contains English and Chinese. These are AI suggestions, not authoritative judgments.` : '';
+usage and example focus on the sense and part of speech used in the supplied context. example contains English and Chinese.
+Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, very common senses or parts of speech of the headword, ordered by usefulness in everyday English or general writing. Include a core sense even if the selected usage is less common. Exclude the current sense, collocations that just rephrase it, rare, dated or specialized senses, and senses of unrelated words that share the selected inflected spelling. Prefer one good entry to padding the list. Use [] when there are no clear additions or headword is null. Each entry is an object with three short single-line strings: partOfSpeech (for example 动词 or 名词), meaning (concise Simplified Chinese gloss), and example (one short English example or collocation with its Simplified Chinese translation). For example, if "issue" means "发表、发布" as in "issue a statement", a useful additional entry is 名词 · 问题 · a serious issue（一个严重的问题）. These are AI suggestions, not authoritative judgments.` : '';
   const task = action === 'summarize'
     ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.'
     : action === 'explain'

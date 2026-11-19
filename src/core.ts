@@ -19,11 +19,25 @@ export interface ExpressionAssessment {
   explanation: string;
   correction: string | null;
 }
+export const MAX_COMMON_USAGES = 3;
+export interface CommonUsage {
+  partOfSpeech: string;
+  meaning: string;
+  example: string;
+}
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
   headword?: string | null;
+  commonUsages?: CommonUsage[];
   pronunciation?: string | null; assessment?: ExpressionAssessment;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
+}
+
+function validateUsageText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > maxLength || /[\r\n\0]/.test(value)) {
+    throw new Error('AI 常见用法字段异常。');
+  }
+  return value.trim();
 }
 export function snapshot(path: string, source: string, text: string, offset?: number): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
@@ -70,6 +84,21 @@ export function validateResult(value: unknown, action: Action): DigestResult {
       if (input.headword !== null && (typeof input.headword !== 'string' || !input.headword.trim() ||
           input.headword.length > 200 || /[\r\n\0]/.test(input.headword))) throw new Error('AI 词头字段异常。');
       validated.headword = typeof input.headword === 'string' ? input.headword.trim() : null;
+    }
+    // Older saved cards do not have supplementary usages.
+    if (input.commonUsages !== undefined) {
+      if (!Array.isArray(input.commonUsages) || input.commonUsages.length > MAX_COMMON_USAGES) {
+        throw new Error('AI 常见用法列表异常。');
+      }
+      validated.commonUsages = input.commonUsages.map((usage: unknown) => {
+        if (!usage || typeof usage !== 'object' || Array.isArray(usage)) throw new Error('AI 常见用法字段异常。');
+        const {partOfSpeech, meaning, example} = usage as Record<string, unknown>;
+        return {
+          partOfSpeech: validateUsageText(partOfSpeech, 30),
+          meaning: validateUsageText(meaning, 160),
+          example: validateUsageText(example, 300),
+        };
+      });
     }
     const pronunciation = input.pronunciation;
     if (pronunciation !== null && (typeof pronunciation !== 'string' || !pronunciation.trim() || pronunciation.length > 500)) throw new Error('AI 音标字段异常。');

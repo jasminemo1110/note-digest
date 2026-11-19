@@ -77,6 +77,19 @@ test('headwords survive validation and legacy results remain compatible', () => 
   }
   assert.deepEqual(validateResult({translation:'解读',headword:'interpret'},'translate'),{translation:'解读'});
 });
+
+test('supplementary usages validate as a bounded list of short text fields', () => {
+  const base = {translation:'发布',meaning:'含义',usage:'用法',example:'例句',pronunciation:null,
+    assessment:{status:'natural',explanation:'自然',correction:null}};
+  const usage = {partOfSpeech:'名词',meaning:'问题',example:'a serious issue（一个严重的问题）'};
+  const input = {...base,commonUsages:[{...usage,example:` ${usage.example} `,ignored:'extra'}]};
+  assert.deepEqual(validateResult(input,'explain').commonUsages,[usage]);
+  assert.deepEqual(validateResult({...base,commonUsages:[]},'explain').commonUsages,[]);
+  for (const commonUsages of [null, {}, Array(4).fill(usage), [null], [{...usage,partOfSpeech:' '}],
+    [{...usage,meaning:'x'.repeat(161)}], [{...usage,example:'first\nsecond'}]]) {
+    assert.throws(() => validateResult({...base,commonUsages},'explain'),/常见用法/);
+  }
+});
 test('edited source refuses write even if selected word still exists', () => {
   const s = snapshot('a.md', 'A word.', 'word');
   assert.throws(() => insertTranslation('A word. Changed.', s, '词', 'below'), /原文已修改/);

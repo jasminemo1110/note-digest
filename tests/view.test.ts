@@ -64,6 +64,18 @@ test('explanation hides insertion and natural assessment but still saves a full 
   view.render(selected,{...explained,assessment:{status:'incorrect',explanation:'有语法问题',correction:'corrected expression'}});
   assert.ok(document.body.textContent!.includes('有语法问题'));assert.ok(document.body.textContent!.includes('corrected expression'));
 });
+test('other common usages appear after contextual explanation and are hidden for an empty list', () => {
+  const {view,document} = setup();
+  const selection = snapshot('a.md','They issued a statement.','issued');
+  const explanation = {...explained,headword:'issue',translation:'发布',example:'issue a statement（发表声明）'};
+  view.render(selection,{...explanation,commonUsages:[{partOfSpeech:'名词',meaning:'问题',example:'a serious issue（一个严重的问题）'}]});
+  const headings = Array.from(document.querySelectorAll('h3'), heading => heading.textContent);
+  assert.ok(headings.indexOf('例句') < headings.indexOf('其他常见用法'));
+  assert.equal(document.querySelector('ul li strong')?.textContent,'名词 · 问题');
+  assert.match(document.querySelector('ul li')!.textContent!,/a serious issue/);
+  view.render(selection,{...explanation,commonUsages:[]});
+  assert.doesNotMatch(document.body.textContent!,/其他常见用法/);
+});
 test('long selection stays blank until chosen action, then displays aligned bilingual paragraphs',()=>{
   const {view,document}=setup();const long=snapshot('a.md','First.\n\nSecond.','First.\n\nSecond.');
   view.render(long,undefined,'','idle');assert.ok(!document.body.textContent!.includes('First.'));assert.ok(document.body.textContent!.includes('Summarize'));assert.equal(document.querySelector('.note-digest-save'),null);

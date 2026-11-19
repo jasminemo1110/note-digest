@@ -95,6 +95,15 @@ export class DigestView extends ItemView {
           el.createEl('h3',{text:'建议改法'}); el.createEl('p',{text:result.assessment.correction,cls:'note-digest-result'});
         }
       }
+      if (result.commonUsages?.length) {
+        el.createEl('h3', {text:'其他常见用法'});
+        const usages = el.createEl('ul');
+        for (const {partOfSpeech, meaning, example} of result.commonUsages) {
+          const item = usages.createEl('li', {cls:'note-digest-result'});
+          item.createEl('strong', {text:`${partOfSpeech} · ${meaning}`});
+          item.createEl('div', {text:example});
+        }
+      }
     }
     if (article) {
       if (canCollectSelection(article)) this.renderSave(article,result,mode);

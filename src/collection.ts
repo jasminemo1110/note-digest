@@ -82,6 +82,13 @@ export function loadCollection(input: unknown): CollectionData {
   return structuredClone({version: 1 as const, secretName: data.secretName, documents, records});
 }
 const quoted = (value: string) => escapeMarkdown(value).split(/\r?\n/).map(line => '> ' + line).join('\n');
+function commonUsagesMarkdown(result: DigestResult): string {
+  if (!result.commonUsages?.length) return '';
+  const safe = (value: string) => escapeMarkdown(value).replace(/[%$^:]/g, char => `&#${char.charCodeAt(0)};`);
+  const items = result.commonUsages.map(({partOfSpeech, meaning, example}) =>
+    `- **${safe(partOfSpeech)} · ${safe(meaning)}** — ${safe(example)}`);
+  return '\n\n**其他常见用法**\n\n' + items.join('\n');
+}
 function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
 }
@@ -99,7 +106,7 @@ function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): stri
       if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
     }
   }
-  return text + '\n';
+  return text + commonUsagesMarkdown(result) + '\n';
 }
 function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   const result = record.result;
@@ -118,7 +125,7 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
       if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
     }
   }
-  return text + '\n';
+  return text + commonUsagesMarkdown(result) + '\n';
 }
 function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = false, context?: string): string {
   const result = record.result;
@@ -138,7 +145,7 @@ function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = fals
       if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
     }
   }
-  return text + '\n';
+  return text + commonUsagesMarkdown(result) + '\n';
 }
 export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   return markedCardMarkdown(record);

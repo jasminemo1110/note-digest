@@ -1,6 +1,6 @@
 {
   "name": "note-digest",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "private": true,
   "description": "Contextual reading and learning inside Obsidian",
   "type": "module",
