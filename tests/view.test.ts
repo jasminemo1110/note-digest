@@ -76,6 +76,55 @@ test('other common usages appear after contextual explanation and are hidden for
   view.render(selection,{...explanation,commonUsages:[]});
   assert.doesNotMatch(document.body.textContent!,/其他常见用法/);
 });
+
+test('a Claudian excerpt keeps the selected part of an explanation with its original sentence', () => {
+  const {view, document} = setup();
+  view.render(selected, {...explained, meaning:'强调论据确实有说服力。'});
+  const paragraph = Array.from(document.querySelectorAll('p')).find(el => el.textContent?.startsWith('强调'))!;
+  const range = document.createRange();
+  range.setStart(paragraph.firstChild!, 2);
+  range.setEnd(paragraph.firstChild!, 6);
+  const selection = document.getSelection()!;
+  selection.addRange(range);
+  const {region, excerpt} = view.claudianExcerpt(selection);
+  assert.deepEqual(excerpt, {source:'A compelling argument.', text:'论据确实'});
+
+  const save = document.querySelector('.note-digest-save button')!;
+  range.setEnd(save.firstChild!, 1);
+  assert.equal(view.claudianExcerpt(selection), undefined);
+  view.render();
+  assert.equal(region.isConnected, false);
+});
+
+test('Claudian excerpts pair a translation or section summary with its own source', () => {
+  const {view, document} = setup();
+  const excerptFrom = (node: Element) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return view.claudianExcerpt(selection)?.excerpt;
+  };
+  const source = 'First.\n\nSecond.';
+  view.render(snapshot('a.md', source, source), {translation:'第一。\n\n第二。', paragraphs:[
+    {source:'First.', start:0, end:6, translation:'第一。'},
+    {source:'Second.', start:8, end:15, translation:'第二。'},
+  ]});
+  assert.deepEqual(excerptFrom(document.querySelectorAll('.note-digest-paragraph .note-digest-result')[1]),
+    {source:'Second.', text:'第二。'});
+
+  const article = {
+    ...planArticleSummary('Clippings/Essay.md', '# First\nOne.\n# Second\nTwo.'),
+    overview:'全文概览正文',
+    sections:[{title:'第一节', summary:'第一节摘要'}, {title:'第二节', summary:'第二节摘要'}],
+  };
+  view.renderArticleSummary(article.path, article);
+  const results = document.querySelectorAll('.note-digest-result');
+  assert.deepEqual(excerptFrom(results[0]), {title:'Essay', text:'全文概览正文'});
+  assert.deepEqual(excerptFrom(results[2]), {title:'Essay · 第二节', source:'# Second\nTwo.', text:'第二节摘要'});
+});
+
 test('long selection stays blank until chosen action, then displays aligned bilingual paragraphs',()=>{
   const {view,document}=setup();const long=snapshot('a.md','First.\n\nSecond.','First.\n\nSecond.');
   view.render(long,undefined,'','idle');assert.ok(!document.body.textContent!.includes('First.'));assert.ok(document.body.textContent!.includes('Summarize'));assert.equal(document.querySelector('.note-digest-save'),null);

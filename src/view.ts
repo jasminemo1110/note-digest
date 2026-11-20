@@ -2,7 +2,8 @@ import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import type { ArticleSummary } from './article-summary';
 import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
-import { shortContext } from './reading-actions';
+import { shortContext, sidebarSelection } from './reading-actions';
+import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment } from './reading-layout';
 import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
@@ -10,6 +11,7 @@ export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
   private selectionView?: {selection: DigestSelection; result?: DigestResult; mode: Action | 'idle'};
+  private claudianContexts = new WeakMap<HTMLElement, Omit<ClaudianExcerpt, 'text'>>();
   constructor(leaf: WorkspaceLeaf, private plugin: NoteDigestPlugin) { super(leaf); }
   getViewType(): string { return VIEW_TYPE; }
   getDisplayText(): string { return 'Note Digest'; }
@@ -22,6 +24,30 @@ export class DigestView extends ItemView {
     el.empty(); el.addClass('note-digest-panel');
     el.createEl('h2', {text: 'Note Digest'});
     return el;
+  }
+  claudianExcerpt(selection: Selection): {region: HTMLElement; excerpt: ClaudianExcerpt} | undefined {
+    if (selection.rangeCount !== 1 || selection.isCollapsed) return;
+    const {startContainer} = selection.getRangeAt(0);
+    let region = startContainer.nodeType === 1 ? startContainer as HTMLElement : startContainer.parentElement;
+    while (region && region !== this.contentEl) {
+      const context = this.claudianContexts.get(region);
+      if (context) {
+        const selected = sidebarSelection(selection, region, false);
+        if (selected) return {region, excerpt: {...context, text: selected.text.trim()}};
+        return;
+      }
+      region = region.parentElement;
+    }
+  }
+  private sourceContext(selection: DigestSelection): string {
+    if (selection.contextOffset !== undefined) {
+      return shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
+    }
+    if ('path' in selection) {
+      try { return shortContext(makeAnchor(selection.source,selection.start,selection.text)); }
+      catch { /* The selection itself is available even when the paragraph cannot be located. */ }
+    }
+    return selection.text;
   }
   private summaryButton(parent: HTMLElement, text = '总结全文', previous?: ArticleSummary): void {
     const button = parent.createEl('button', {text});
@@ -70,15 +96,18 @@ export class DigestView extends ItemView {
     }
     if (mode === 'summarize') {
       el.createEl('h3',{text:'所选内容摘要'});
-      el.createEl('p',{text:result.summary ?? '',cls:'note-digest-result'});
+      const summary = el.createEl('p',{text:result.summary ?? '',cls:'note-digest-result'});
+      this.claudianContexts.set(summary, {source:selection.text});
       return;
     }
     if (mode === 'translate') {
       const paragraphs = result.paragraphs ?? [{source:selection.text,translation:result.translation}];
       for (const paragraph of paragraphs) {
         const pair = el.createDiv({cls:'note-digest-paragraph'});
-        pair.createEl('p',{text:paragraph.source,cls:'note-digest-original'});
-        pair.createEl('p',{text:paragraph.translation,cls:'note-digest-result'});
+        const bilingual = pair.createDiv();
+        bilingual.createEl('p',{text:paragraph.source,cls:'note-digest-original'});
+        bilingual.createEl('p',{text:paragraph.translation,cls:'note-digest-result'});
+        this.claudianContexts.set(bilingual, {source:result.paragraphs ? paragraph.source : this.sourceContext(selection)});
         if (!article) continue;
         const insertRange = 'start' in paragraph ? {...article,text:paragraph.source,start:paragraph.start,end:paragraph.end} : article;
         this.renderInsertButtons(pair,insertRange,paragraph.translation,revision,receipt=>{
@@ -88,36 +117,30 @@ export class DigestView extends ItemView {
         });
       }
     } else {
+      const explanation = el.createDiv();
+      const context = this.sourceContext(selection);
+      this.claudianContexts.set(explanation, {source:context});
       const headword = explanationHeadword(selection.text, result);
-      el.createEl('h3',{text:headword,cls:'note-digest-original'});
-      el.createEl('p',{text:result.pronunciation ?? '音标：不适用或无法可靠确定',cls:'note-digest-muted'});
-      el.createEl('p',{text:result.translation,cls:'note-digest-result'});
-      if (headword !== selection.text) el.createEl('p',{text:'原文词形：' + selection.text,cls:'note-digest-muted'});
-      if (article) {
-        let context = article.text;
-        if (article.contextOffset !== undefined) {
-          context = shortContext({block:article.context,offset:article.contextOffset,text:article.text});
-        } else {
-          try { context = shortContext(makeAnchor(article.source,article.start,article.text)); } catch { /* Keep the selected text if the paragraph is too large. */ }
-        }
-        el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
-      } else if ('sidebar' in selection && selection.context) {
-        const context = shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
-        el.createEl('h3',{text:'原始语境'}); el.createEl('blockquote',{text:context});
+      explanation.createEl('h3',{text:headword,cls:'note-digest-original'});
+      explanation.createEl('p',{text:result.pronunciation ?? '音标：不适用或无法可靠确定',cls:'note-digest-muted'});
+      explanation.createEl('p',{text:result.translation,cls:'note-digest-result'});
+      if (headword !== selection.text) explanation.createEl('p',{text:'原文词形：' + selection.text,cls:'note-digest-muted'});
+      if (article || selection.context) {
+        explanation.createEl('h3',{text:'原始语境'}); explanation.createEl('blockquote',{text:context});
       }
       for (const [key,label] of [['meaning','语境含义'],['usage','用法'],['example','例句']] as const) {
-        if (result[key]) { el.createEl('h3',{text:label}); el.createEl('p',{text:result[key],cls:'note-digest-result'}); }
+        if (result[key]) { explanation.createEl('h3',{text:label}); explanation.createEl('p',{text:result[key],cls:'note-digest-result'}); }
       }
       if (result.assessment && showAssessment(result.assessment)) {
-        el.createEl('h3',{text:result.assessment.status === 'uncertain' ? '语境提示' : '表达问题 · '+ASSESSMENT_LABELS[result.assessment.status]});
-        el.createEl('p',{text:result.assessment.explanation,cls:'note-digest-result'});
+        explanation.createEl('h3',{text:result.assessment.status === 'uncertain' ? '语境提示' : '表达问题 · '+ASSESSMENT_LABELS[result.assessment.status]});
+        explanation.createEl('p',{text:result.assessment.explanation,cls:'note-digest-result'});
         if (result.assessment.correction) {
-          el.createEl('h3',{text:'建议改法'}); el.createEl('p',{text:result.assessment.correction,cls:'note-digest-result'});
+          explanation.createEl('h3',{text:'建议改法'}); explanation.createEl('p',{text:result.assessment.correction,cls:'note-digest-result'});
         }
       }
       if (result.commonUsages?.length) {
-        el.createEl('h3', {text:'其他常见用法'});
-        const usages = el.createEl('ul');
+        explanation.createEl('h3', {text:'其他常见用法'});
+        const usages = explanation.createEl('ul');
         for (const {partOfSpeech, meaning, example} of result.commonUsages) {
           const item = usages.createEl('li', {cls:'note-digest-result'});
           item.createEl('strong', {text:`${partOfSpeech} · ${meaning}`});
@@ -178,7 +201,8 @@ export class DigestView extends ItemView {
     if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
     if (article?.overview) {
       el.createEl('h4', {text:'全文概览'});
-      el.createEl('p', {text:article.overview, cls:'note-digest-result'});
+      const overview = el.createEl('p', {text:article.overview, cls:'note-digest-result'});
+      this.claudianContexts.set(overview, {title});
     }
     if (article?.sections.length && article.parts.length > 1) {
       const heading = article.overview ? '分节摘要' : `部分摘要 · 已完成 ${article.sections.length}/${article.parts.length} 节`;
@@ -186,9 +210,11 @@ export class DigestView extends ItemView {
       article.sections.forEach((section, index) => {
         const row = el.createDiv({cls:'note-digest-paragraph'});
         row.createEl('h5', {text:section.title, cls:'note-digest-original'});
-        row.createEl('p', {text:section.summary, cls:'note-digest-result'});
+        const part = article.parts[index];
+        const summary = row.createEl('p', {text:section.summary, cls:'note-digest-result'});
+        this.claudianContexts.set(summary, {title:`${title} · ${section.title}`, source:article.source.slice(part.start, part.end).trim()});
         const locate = row.createEl('button', {text:'定位原文'});
-        locate.onclick = () => { void this.plugin.revealArticlePart(article, article.parts[index]); };
+        locate.onclick = () => { void this.plugin.revealArticlePart(article, part); };
       });
     }
     if (!running) this.renderCollection(path);

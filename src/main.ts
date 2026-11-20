@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor } from 'obsidian';
+import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
 import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateParagraphs } from './provider';
 import { planArticleSummary, type ArticlePart, type ArticleSummary } from './article-summary';
@@ -13,6 +13,7 @@ import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
 import type { RenderedSection, TableCellPosition } from './markdown-source';
 import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
+import { appendClaudianDraft, getClaudian } from './claudian-draft';
 
 type CodeMirrorEditor = Editor & {cm?: {posAtDOM(node: Node, offset?: number): number}};
 
@@ -29,6 +30,7 @@ export default class NoteDigestPlugin extends Plugin {
   private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
   private calloutBusy = false;
   private claudianPanes = new Map<HTMLElement, () => void>();
+  private recentClaudianLeaf?: WorkspaceLeaf;
   async onload(): Promise<void> {
     this.stopped = false;
     const data = await this.loadData();
@@ -48,7 +50,10 @@ export default class NoteDigestPlugin extends Plugin {
     });
     this.registerEvent(this.app.workspace.on('layout-change', () => this.watchClaudianPanes()));
     this.registerDomEvent(document, 'keyup', event => {
-      if (event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) this.rememberCalloutSource(event.target);
+      if (!event.shiftKey || !/^(Arrow|Home|End|Page)/.test(event.key)) return;
+      this.rememberCalloutSource(event.target);
+      const selection = window.getSelection();
+      if (selection) this.offerClaudianDraft(selection);
     });
     this.registerDomEvent(document, 'keydown', event => {
       if (!/^[dn]$/i.test(event.key)) return;
@@ -71,14 +76,9 @@ export default class NoteDigestPlugin extends Plugin {
       this.removeSelectionButton();
       const selection = window.getSelection();
       if (!selection || !selection.rangeCount) return;
+      if (this.offerClaudianDraft(selection)) return;
       if (!this.readSidebarSelection(selection, false) && !this.articleViewForSelection(selection)) return;
-      const rect = selection.getRangeAt(0).getBoundingClientRect();
-      const button = document.body.createEl('button', { text: 'Digest', cls: 'note-digest-selection' });
-      button.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 100)) + 'px';
-      button.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 45)) + 'px';
-      button.onmousedown = e => e.preventDefault();
-      button.onclick = () => { void this.capture(); this.removeSelectionButton(); };
-      this.selectionButton = button;
+      this.showSelectionButton(selection.getRangeAt(0), 'Digest', () => { void this.capture(); });
     });
     this.registerMarkdownPostProcessor(async (element, context) => {
       const section = context.getSectionInfo(element);
@@ -112,6 +112,7 @@ export default class NoteDigestPlugin extends Plugin {
     }));
     this.registerEvent(this.app.workspace.on('active-leaf-change', leaf => {
       this.removeSelectionButton();
+      if (leaf?.view.getViewType() === CLAUDIAN_VIEW) this.recentClaudianLeaf = leaf;
       if (leaf?.view instanceof MarkdownView && leaf.view.file?.path !== this.summaryJob?.path) this.stopArticleSummary();
       if (leaf?.view instanceof MarkdownView && leaf.view !== this.calloutSource?.view) this.calloutSource = undefined;
     }));
@@ -159,6 +160,34 @@ export default class NoteDigestPlugin extends Plugin {
     await this.app.workspace.getLeaf(false).openFile(file, {eState: {line}});
   }
   private removeSelectionButton(): void { this.selectionButton?.remove(); this.selectionButton = undefined; }
+  private showSelectionButton(range: Range, label: string, activate: () => void): void {
+    this.removeSelectionButton();
+    const rect = range.getBoundingClientRect();
+    const button = document.body.createEl('button', {text:label, cls:'note-digest-selection'});
+    button.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - button.offsetWidth - 8)) + 'px';
+    button.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - button.offsetHeight - 8)) + 'px';
+    button.onmousedown = event => event.preventDefault();
+    button.onclick = () => {
+      this.removeSelectionButton();
+      activate();
+    };
+    this.selectionButton = button;
+  }
+  private offerClaudianDraft(selection: Selection): boolean {
+    if (selection.isCollapsed || !getClaudian(this.app)) return false;
+    for (const {view} of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (!(view instanceof DigestView)) continue;
+      const selected = view.claudianExcerpt(selection);
+      if (!selected) continue;
+      this.showSelectionButton(selection.getRangeAt(0), '问 Claudian', () => {
+        if (!selected.region.isConnected) return;
+        void appendClaudianDraft(this.app, selected.excerpt, this.recentClaudianLeaf)
+          .catch(error => new Notice(error instanceof Error ? error.message : '无法把选段加入 Claudian 草稿。'));
+      });
+      return true;
+    }
+    return false;
+  }
   private watchClaudianPanes(): void {
     const leaves = this.app.workspace.getLeavesOfType(CLAUDIAN_VIEW);
     const roots = new Set(leaves.map(leaf => leaf.view.containerEl));
