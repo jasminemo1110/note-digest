@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl } from 'obsidian';
+import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor } from 'obsidian';
 import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateParagraphs } from './provider';
 import { planArticleSummary, type ArticlePart, type ArticleSummary } from './article-summary';
@@ -13,6 +13,8 @@ import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
 import type { RenderedSection, TableCellPosition } from './markdown-source';
 import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
+
+type CodeMirrorEditor = Editor & {cm?: {posAtDOM(node: Node, offset?: number): number}};
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
@@ -174,15 +176,20 @@ export default class NoteDigestPlugin extends Plugin {
     }
   }
   private rememberCalloutSource(target: EventTarget | null): void {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view?.file || !(target instanceof Node) || !view.contentEl.contains(target)) return;
-    this.calloutSource = {view, file: view.file, selection: this.readArticleSelection().catch(() => undefined)};
+    if (target instanceof Node) this.setCalloutSource(this.articleViewContaining(target), window.getSelection());
+  }
+  private setCalloutSource(view: MarkdownView | undefined, selection: Selection | null): void {
+    if (!view?.file) return;
+    this.calloutSource = {view, file: view.file, selection: this.readArticleSelection(selection, view).catch(() => undefined)};
   }
   private async saveClaudianCallout(view: object, message: HTMLElement, mode: ClaudianSaveMode): Promise<void> {
     if (this.calloutBusy) return;
     this.calloutBusy = true;
     const label = mode === 'exchange' ? '问答' : '答案';
     try {
+      // A sidebar click can change focus while the note still owns the live selection.
+      const live = window.getSelection();
+      this.setCalloutSource(this.articleViewForSelection(live), live);
       const anchor = this.calloutSource;
       if (!anchor) throw new Error('请先在原文中选中一句话。');
       const note = readClaudianNote(view, message, mode);
@@ -303,32 +310,43 @@ export default class NoteDigestPlugin extends Plugin {
   }
   private articleViewForSelection(selection: Selection | null): MarkdownView | undefined {
     if (!selection?.anchorNode || !selection.focusNode || !selection.toString().trim()) return;
-    const {anchorNode, focusNode} = selection;
+    return this.articleViewContaining(selection.anchorNode, selection.focusNode);
+  }
+  private articleViewContaining(...nodes: Node[]): MarkdownView | undefined {
     return this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view).find(
-      (view): view is MarkdownView => view instanceof MarkdownView && view.contentEl.contains(anchorNode) && view.contentEl.contains(focusNode),
+      (view): view is MarkdownView => view instanceof MarkdownView && nodes.every(node => view.contentEl.contains(node)),
     );
   }
-  private async readArticleSelection(): Promise<SelectionSnapshot> {
-    const selection = window.getSelection();
+  private async readArticleSelection(selection = window.getSelection(), sourceView?: MarkdownView): Promise<SelectionSnapshot> {
     const selectionView = this.articleViewForSelection(selection);
-    const view = selectionView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = sourceView ?? selectionView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view?.file) throw new Error('请在 Markdown 文章或侧栏中选择英文。');
     const file = view.file;
     const path = file.path;
     if (this.collection.isLearningNote(path)) throw new Error('请从原文章选择内容。');
     const domText = selection?.toString() ?? '';
-    if (domText.trim() && !selectionView) throw new Error('请在同一个侧栏视图或 Markdown 原文中选择英文。');
-    const capture = selectionView && selection?.rangeCount === 1
-      ? articleRange(selection.getRangeAt(0), view.contentEl, domText) : undefined;
+    if (domText.trim() && selectionView !== view) throw new Error('请在同一个侧栏视图或 Markdown 原文中选择英文。');
+    const nativeRange = selectionView === view && selection?.rangeCount === 1 ? selection.getRangeAt(0) : undefined;
+    const capture = nativeRange && articleRange(nativeRange, view.contentEl, domText);
     const block = capture?.block;
     const widget = block?.closest<HTMLElement>('.cm-table-widget');
     const editing = view.getMode() === 'source';
+    const cm = editing ? (view.editor as CodeMirrorEditor).cm : undefined;
     const source = editing ? view.editor.getValue() : undefined;
     if (source !== undefined && !widget) {
       const text = view.editor.getSelection();
       const offset = view.editor.posToOffset(view.editor.getCursor('from'));
-      if (!capture || (text === domText && source.slice(offset, offset + text.length) === text)) {
+      if (!nativeRange || (text === domText && source.slice(offset, offset + text.length) === text)) {
         return snapshot(path, source, text, offset);
+      }
+      // Live Preview can hide Markdown delimiters. Compare editor coordinates when the visible text differs.
+      if (cm && text && !block?.closest('.internal-embed, .markdown-embed')) {
+        let matches = false;
+        try {
+          matches = cm.posAtDOM(nativeRange.startContainer, nativeRange.startOffset) === offset &&
+            cm.posAtDOM(nativeRange.endContainer, nativeRange.endOffset) === offset + text.length;
+        } catch { /* The selection may belong to a rendered widget. */ }
+        if (matches) return snapshot(path, source, text, offset);
       }
     }
     if (!capture) throw new Error('请在原文中选择英文。');
@@ -347,7 +365,6 @@ export default class NoteDigestPlugin extends Plugin {
           Array.from(table.rows).every(row => Array.from(row.cells).every(cell => cell.rowSpan === 1 && cell.colSpan === 1))) {
         cell = {row: row.rowIndex, column: (block as HTMLTableCellElement).cellIndex, rows: table.rows.length, columns: table.rows[0].cells.length};
         if (editing && widget) {
-          const cm = (view.editor as typeof view.editor & {cm?: {posAtDOM(node: Node): number}}).cm;
           // Live Preview uses a nested cell editor. Ask CodeMirror for the enclosing widget's source position.
           try { cell.widgetStart = cm?.posAtDOM(widget); } catch { /* The widget can be replaced by a render. */ }
         }
