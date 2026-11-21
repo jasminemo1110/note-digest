@@ -1,20 +1,21 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
 import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
-import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, type ArticlePart, type ArticleSummary } from './article-summary';
-import { isLongSelection } from './reading-layout';
+import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
+import { isLongSelection, type ParagraphTranslation } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
 import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges, tableHighlightRanges } from './highlights';
-import { articleBody, locateAnchor, SUMMARY_CALLOUT } from './anchors';
+import { articleBody, locateAnchor, SECTION_TRANSLATION_CALLOUT, SUMMARY_CALLOUT } from './anchors';
 import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
 import type { RenderedSection, TableCellPosition } from './markdown-source';
 import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
 import { appendClaudianDraft, getClaudian } from './claudian-draft';
 import { ResultCache } from './result-cache';
+import { changeSectionTranslation } from './section-translation';
 
 type CodeMirrorEditor = Editor & {cm?: {posAtDOM(node: Node, offset?: number): number}};
 
@@ -352,19 +353,33 @@ export default class NoteDigestPlugin extends Plugin {
       await this.checkArticleSource(article);
       if (!current()) return;
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      const result = await translateArticlePart(article, article.parts[index], key ?? '', requestUrl, {
-        cache: this.resultCache, regenerate,
-        onRequest: () => {
-          if (!current()) throw new Error('操作已取消。');
-          panel.renderSectionTranslation(article, index, returnScroll, [], '正在翻译本节…', true);
-        },
-      });
-      if (!current()) return;
-      await this.checkArticleSource(article);
+      const result: ParagraphTranslation[] = [];
+      const chunks = translationChunks(article, sectionAt(article, index));
+      for (const chunk of chunks) {
+        if (!current()) return;
+        result.push(...await translateArticlePart(article, chunk, key ?? '', requestUrl, {
+          cache: this.resultCache, regenerate,
+          onRequest: () => {
+            if (!current()) throw new Error('操作已取消。');
+            panel.renderSectionTranslation(article, index, returnScroll, [], '正在翻译本节…', true);
+          },
+        }));
+        if (!current()) return;
+        await this.checkArticleSource(article);
+      }
       if (current()) panel.renderSectionTranslation(article, index, returnScroll, result);
     } catch (error) {
       if (current()) panel.renderSectionTranslation(article, index, returnScroll, [], error instanceof Error ? error.message : '翻译失败。');
     }
+  }
+  async writeSectionTranslation(article: ArticleSummary, index: number, paragraphs: ParagraphTranslation[], undo = false): Promise<ArticleSummary> {
+    await this.checkArticleSource(article);
+    const changed = await changeSectionTranslation(article, sectionAt(article, index), paragraphs, undo);
+    await this.storage.update(article.path, current => {
+      if (current !== article.source) throw new Error('原文已修改，请重新打开本节后操作。');
+      return changed.source;
+    });
+    return changed;
   }
   async returnToDigest(panel: DigestView, article: ArticleSummary, scroll: number): Promise<void> {
     const generation = ++this.generation;
@@ -426,7 +441,8 @@ export default class NoteDigestPlugin extends Plugin {
     const nativeRange = selectionView === view && selection?.rangeCount === 1 ? selection.getRangeAt(0) : undefined;
     const capture = nativeRange && articleRange(nativeRange, view.contentEl, domText);
     const block = capture?.block;
-    if (nativeRange && [...view.contentEl.querySelectorAll(`[data-callout="${SUMMARY_CALLOUT}"]`)].some(el => nativeRange.intersectsNode(el))) {
+    const generated = `[data-callout="${SUMMARY_CALLOUT}"], [data-callout="${SECTION_TRANSLATION_CALLOUT}"]`;
+    if (nativeRange && [...view.contentEl.querySelectorAll(generated)].some(el => nativeRange.intersectsNode(el))) {
       throw new Error('请在英文原文中选择内容。');
     }
     const widget = block?.closest<HTMLElement>('.cm-table-widget');

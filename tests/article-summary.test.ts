@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { articleBody, LEARNING_BOUNDARY } from '../src/anchors';
-import { articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, type ArticleSummary } from '../src/article-summary';
+import { articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionSource, type ArticleSummary } from '../src/article-summary';
 import { readingSnapshot, snapshot } from '../src/core';
 import { summarizeArticle, translateArticlePart, type Transport } from '../src/provider';
 import { ResultCache } from '../src/result-cache';
@@ -159,4 +159,34 @@ test('translation requests a single section and aligns locally even if the AI re
   assert.equal(article.source.slice(first.start, first.end), '**Q&A: What changed?**');
   await run();
   assert.equal(calls, 1);
+});
+
+test('trailing Notes and References are separate reading modules and never sent for the article overview', async () => {
+  const body = 'Opening body.\n\n## Next\n\nFinal body.';
+  const notes = '**Notes**  \n\n' + Array.from({length:7}, (_, i) =>
+    `\\[${i + 1}\\] Supporting material. ` + 'An additional note. '.repeat(20)).join('\n\n');
+  const source = body + '\n\n' + notes + '\n\nReferences\n----------\n\nA source.';
+  const article = planArticleSummary('source.md', source);
+  assert.deepEqual(article.supplements?.map(part => part.label), ['Notes','References']);
+  assert.equal(sectionSource(article, article.supplements![0]).text.trim(), notes.trim());
+  assert.deepEqual(planArticleSummary('a.md', '# Notes\n\nAn opening thought.\n\n# Next\n\nMain article.').supplements, undefined);
+  assert.deepEqual(planArticleSummary('a.md', 'Opening body.\n\n## Notes\n\nAn aside.\n\n## Next\n\nMain article.').supplements, undefined);
+  const seen: string[] = [];
+  const transport: Transport = async request => {
+    seen.push(JSON.parse(request.body as string).messages[1].content);
+    const output = {title:'小节', summary:'主旨'};
+    return {status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(output)}}]}};
+  };
+  await summarizeArticle(article, 'test', transport, async () => {}, () => {});
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every(input => !/Supporting material|A source\./.test(input)));
+});
+
+test('named Markdown sections stay together up to the request limit', () => {
+  const heading = 'An explicit section\n===================\n\n';
+  const body = (Array.from({length:6}, () => 'Here is another sentence. '.repeat(22).trim())).join('\n\n');
+  const source = heading + body + '\n\n## Next section\n\nAnother thought.';
+  const article = planArticleSummary('a.md', source);
+  assert.equal(article.parts.length, 2);
+  assert.equal(sectionSource(article, article.parts[0]).text.trim(), (heading + body).trim());
 });

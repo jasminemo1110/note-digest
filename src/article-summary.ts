@@ -1,37 +1,43 @@
-import { articleBody, articleStart, frontmatterEnd, paragraphRanges, savedSummaryRanges, SUMMARY_CALLOUT, SUMMARY_START, SUMMARY_END } from './anchors';
-import { canCollectSelection, escapeMarkdown, rebaseSelectionAfterInsertion, type DigestSelection, type InsertionReceipt } from './core';
-import { proseText } from './markdown-source';
+import { articleBody, articleStart, frontmatterEnd, readingProjection, savedSummaryRanges, SUMMARY_CALLOUT, SUMMARY_START, SUMMARY_END } from './anchors';
+import { escapeMarkdown, rebaseSelectionAfterInsertion, type DigestSelection, type InsertionReceipt } from './core';
+import { parseMarkdown, proseText } from './markdown-source';
 
 const SECTION_TARGET = 1800;
 const SECTION_LENGTH = 6000;
 const MAX_SECTIONS = 40;
 
 export interface ArticlePart { start: number; end: number }
+export interface ArticleSupplement extends ArticlePart { label: string }
 export interface SectionSummary { title: string; summary: string }
 export interface ArticleSummary {
   path: string;
   source: string;
   selection?: DigestSelection;
   parts: ArticlePart[];
+  supplements?: ArticleSupplement[];
   sections: SectionSummary[];
   overview?: string;
 }
 
-function articleContent(source: string): {start: number; body: string} {
-  const start = articleStart(source);
-  return {start, body: articleBody(source).slice(start)};
-}
-
 export function planArticleSummary(path: string, source: string): ArticleSummary {
-  const {start, body} = articleContent(source);
-  return {path, source, parts: planParts(body, start), sections: []};
+  const body = articleBody(source);
+  const reading = readingProjection(source, articleStart(source), body.length, body);
+  const supplements = supplementalParts(reading.text);
+  const parts = planParts(reading.text.slice(0, supplements[0]?.start), 0);
+  const locate = ({start, end}: ArticlePart) => ({
+    start: reading.sourceOffset(start, 'start'), end: reading.sourceOffset(end, 'end'),
+  });
+  return {path, source, parts: parts.map(locate), sections: [],
+    ...(supplements.length && {supplements: supplements.map(part => ({...part, ...locate(part)}))})};
 }
 
 export function planSelectedSummary(selection: DigestSelection): ArticleSummary {
   if ('path' in selection) {
-    const {start, body} = articleContent(selection.source);
-    const end = start + body.length;
-    const located = canCollectSelection(selection);
+    const start = articleStart(selection.source);
+    const end = articleBody(selection.source).length;
+    const body = readingProjection(selection.source, start, end).text;
+    const located = !selection.readOnly && selection.start >= 0 &&
+      selection.source.slice(selection.start, selection.end) === selection.text;
     const normalize = (text: string) => text.trim().replace(/\s+/g, ' ');
     if ((located && selection.start <= start && selection.end >= end) ||
         (!located && (body.trim() === selection.text.trim() || normalize(proseText(body)) === normalize(selection.text)))) {
@@ -39,40 +45,61 @@ export function planSelectedSummary(selection: DigestSelection): ArticleSummary 
     }
     if (located) {
       if (selection.start < start || selection.end > end) throw new Error('请在英文正文中划选要摘要的文字。');
+      const reading = readingProjection(selection.source, selection.start, selection.end);
       return {path: selection.path, source: selection.source, selection,
-        parts: planParts(selection.text, selection.start), sections: []};
+        parts: planParts(reading.text, 0).map(part => ({
+          start: reading.sourceOffset(part.start, 'start'), end: reading.sourceOffset(part.end, 'end'),
+        })), sections: []};
     }
     return {path: selection.path, source: selection.text, selection, parts: planParts(selection.text, 0), sections: []};
   }
   return {path: '', source: selection.text, selection, parts: planParts(selection.text, 0), sections: []};
 }
 
+const supplementName = /^(?:notes|endnotes|footnotes|references|bibliography|sources|further reading|acknowledg(?:e)?ments|supplementary (?:material|information)|appendix(?: [A-Z0-9]+)?|podcasts?)\s*[:：]?$/i;
+
+function supplementalParts(body: string): ArticleSupplement[] {
+  const headings = parseMarkdown(body).children.flatMap(node => {
+    if (!node.position || (node.type !== 'heading' && node.type !== 'paragraph')) return [];
+    const start = node.position.start.offset!;
+    const raw = body.slice(start, node.position.end.offset);
+    if (node.type === 'paragraph' && /[\r\n]/.test(raw)) return [];
+    const label = proseText(raw).replace(/\s*[:：]$/, '');
+    const supplemental = supplementName.test(label);
+    if (node.type !== 'heading' && !supplemental) return [];
+    return [{start, label, depth: node.type === 'heading' ? node.depth : 6, supplemental}];
+  });
+  const first = headings.findIndex((heading, index) => heading.supplemental && !!body.slice(0, heading.start).trim() &&
+    !headings.slice(index + 1).some(next => !next.supplemental && next.depth <= heading.depth));
+  if (first === -1) return [];
+  const tail = headings.slice(first).filter(heading => heading.supplemental);
+  return tail.map(({start, label}, index) => ({start, label, end: tail[index + 1]?.start ?? body.length}));
+}
+
 function planParts(text: string, offset: number): ArticlePart[] {
   if (!text.trim()) throw new Error('没有可总结的正文。');
-  const boundaries = new Map<number, 'section' | 'question'>([[0, 'section']]);
-  let fence: string | undefined;
-  let blank = true;
-  for (const line of text.matchAll(/[^\r\n]*(?:\r?\n|$)/g)) {
-    const value = line[0].trimEnd();
-    const marker = value.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-    if (fence) {
-      if (marker && marker[1].startsWith(fence) && !marker[2].trim()) fence = undefined;
-    } else if (marker) {
-      fence = marker[1];
-    } else if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(value)) {
-      boundaries.set(line.index, 'section');
-    } else if (blank && /^(?:\*\*|__)?[\p{L}][\p{L}\p{N} .&’'-]{0,30}: .+\?(?:\*\*|__)?$/u.test(value.trim())) {
-      boundaries.set(line.index, 'question');
+  const boundaries = new Set([0]);
+  const explicit = new Set<number>();
+  const blockStarts: number[] = [];
+  for (const node of parseMarkdown(text).children) {
+    if (!node.position) continue;
+    const start = node.position.start.offset!;
+    blockStarts.push(start);
+    const firstLine = text.slice(start, node.position.end.offset).split(/\r?\n/, 1)[0];
+    const question = node.type === 'paragraph' &&
+      /^(?:\*\*|__)?[\p{L}][\p{L}\p{N} .&’'-]{0,30}: .+\?(?:\*\*|__)?\s*$/u.test(firstLine);
+    if (node.type === 'heading' || question) {
+      explicit.add(start);
+      boundaries.add(start);
     }
-    blank = !value.trim();
   }
-  const starts = [...boundaries.keys(), text.length];
+  const starts = [...boundaries, text.length];
   const parts: ArticlePart[] = [];
   for (let i = 1; i < starts.length; i++) {
     const start = starts[i - 1];
     const sectionEnd = starts[i];
-    const target = boundaries.get(start) === 'question' ? SECTION_LENGTH : SECTION_TARGET;
-    const breaks = paragraphRanges(text.slice(start, sectionEnd)).slice(1).map(range => start + range.start);
+    const target = explicit.has(start) ? SECTION_LENGTH : SECTION_TARGET;
+    const breaks = blockStarts.filter(point => point > start && point < sectionEnd);
     let nextBreak = 0;
     let cursor = start;
     while (cursor < sectionEnd) {
@@ -111,7 +138,23 @@ export function articleFileSource(article: ArticleSummary): string | undefined {
 }
 
 export function articlePartIsLocated(article: ArticleSummary): boolean {
-  return !article.selection || ('path' in article.selection && canCollectSelection(article.selection));
+  return !article.selection || ('path' in article.selection && !article.selection.readOnly && article.selection.start >= 0 &&
+    article.selection.source === article.source);
+}
+
+export function sectionAt(article: ArticleSummary, index: number): ArticlePart {
+  return article.parts[index] ?? article.supplements![index - article.parts.length];
+}
+
+export function sectionSource(article: ArticleSummary, part: ArticlePart) {
+  return readingProjection(article.source, part.start, part.end);
+}
+
+export function translationChunks(article: ArticleSummary, part: ArticlePart): ArticlePart[] {
+  const reading = sectionSource(article, part);
+  return reading.text.length <= SECTION_LENGTH ? [part] : planParts(reading.text, 0).map(({start, end}) => ({
+    start: reading.sourceOffset(start, 'start'), end: reading.sourceOffset(end, 'end'),
+  }));
 }
 
 export function overviewInsertion(current: string, article: ArticleSummary): InsertionReceipt | undefined {
@@ -133,9 +176,10 @@ export function overviewInsertion(current: string, article: ArticleSummary): Ins
 export function rebaseAfterOverview(article: ArticleSummary, receipt: InsertionReceipt): ArticleSummary {
   const {selection} = article;
   if (!selection || articlePartIsLocated(article)) {
-    return {...article, source: receipt.after, parts: article.parts.map(({start, end}) => ({
-      start: start + receipt.length, end: end + receipt.length,
-    })), selection: selection && 'path' in selection ? rebaseSelectionAfterInsertion(selection, receipt) ?? selection : selection};
+    const shift = <T extends ArticlePart>(part: T) => ({...part, start: part.start + receipt.length, end: part.end + receipt.length});
+    return {...article, source: receipt.after, parts: article.parts.map(shift),
+      ...(article.supplements && {supplements: article.supplements.map(shift)}),
+      selection: selection && 'path' in selection ? rebaseSelectionAfterInsertion(selection, receipt) ?? selection : selection};
   }
   return 'path' in selection ? {...article, selection: {...selection, source: receipt.after}} : article;
 }

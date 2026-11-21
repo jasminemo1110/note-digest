@@ -6,6 +6,39 @@ export const SUMMARY_CALLOUT = 'note-digest-summary';
 export const SUMMARY_START = '<!-- note-digest:summary -->';
 export const SUMMARY_END = '<!-- note-digest:summary-end -->';
 const summaryBlock = /^([ \t\r\n]*)<!-- note-digest:summary -->[ \t]*\r?\n\r?\n> \[!note-digest-summary\]\+ [^\r\n]+\r?\n(?:>[^\r\n]*\r?\n)+\r?\n<!-- note-digest:summary-end -->[ \t]*(?:\r?\n|$)/;
+export const SECTION_TRANSLATION_CALLOUT = 'note-digest-translation';
+const sectionTranslationBlock = /(?<nl>\r?\n)\k<nl><!-- note-digest:section-translation:(?<length>\d{1,8}):(?<digest>[0-9a-f]{64}) -->\k<nl>\k<nl>(?<content>> \[!note-digest-translation\] 本节译文(?:\k<nl>>[^\r\n]*)*)\k<nl>\k<nl><!-- note-digest:section-translation-end -->\k<nl>\k<nl>/g;
+
+export function sectionTranslationRanges(source: string) {
+  return [...source.matchAll(sectionTranslationBlock)].map(match => ({
+    start: match.index, end: match.index + match[0].length,
+    length: Number(match.groups!.length), content: match.groups!.content, digest: match.groups!.digest,
+  }));
+}
+
+/** Omit saved translations for AI and section planning, with offsets back to the real note. */
+export function readingProjection(source: string, start: number, end: number, body = source) {
+  const omitted = sectionTranslationRanges(source).filter(range => range.end > start && range.start < end)
+    .map(range => ({start: Math.max(start, range.start), end: Math.min(end, range.end)}));
+  let cursor = start;
+  const pieces: string[] = [];
+  for (const range of omitted) {
+    pieces.push(body.slice(cursor, range.start));
+    cursor = range.end;
+  }
+  pieces.push(body.slice(cursor, end));
+  return {
+    text: pieces.join(''),
+    sourceOffset(offset: number, edge: 'start' | 'end') {
+      let position = start + offset;
+      for (const range of omitted) {
+        if (position < range.start || (position === range.start && edge === 'end')) break;
+        position += range.end - range.start;
+      }
+      return position;
+    },
+  };
+}
 
 export function frontmatterEnd(source: string): number {
   return source.match(/^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/)?.[0].length ??
@@ -27,21 +60,21 @@ export function articleStart(source: string): number {
   return prefix + (source.slice(prefix).match(/^(?:[ \t]*\r?\n)*/)?.[0].length ?? 0);
 }
 
-function maskSummaries(source: string): string {
-  const ranges = savedSummaryRanges(source);
-  if (!ranges.length) return source;
-  const {start} = ranges[0];
-  const {end} = ranges.at(-1)!;
-  return source.slice(0, start) + source.slice(start, end).replace(/[^\r\n]/g, ' ') + source.slice(end);
+export function articleBody(source: string): string {
+  let body = beforeLearningSection(source);
+  for (const {start, end} of [...savedSummaryRanges(source), ...sectionTranslationRanges(source)]) {
+    if (start < body.length) body = body.slice(0, start) + body.slice(start, end).replace(/[^\r\n]/g, ' ') + body.slice(end);
+  }
+  return body.trimEnd();
 }
 
-export function articleBody(source: string): string {
+function beforeLearningSection(source: string): string {
   const boundary = source.indexOf(LEARNING_BOUNDARY);
-  if (boundary < 0) return maskSummaries(source.trimEnd());
+  if (boundary < 0) return source;
   const headingStart = boundary - learningSectionHeading.length;
   // A marker below the heading stays inside that section when reordered in Outline.
   if (headingStart >= 0 && source.startsWith(learningSectionHeading, headingStart)) {
-    return maskSummaries(source.slice(0, headingStart).trimEnd());
+    return source.slice(0, headingStart);
   }
   const afterMarker = boundary + LEARNING_BOUNDARY.length;
   // Content can be inserted between the hidden marker and the generated heading in a rendered editor.
@@ -49,9 +82,9 @@ export function articleBody(source: string): string {
   const heading = /^## Note Digest 学习笔记[ \t]*\r?\n[ \t\r\n]*(?=<!-- note-digest:(?:group:(?:word|quote)|record:[\w-]+) -->)/m.exec(tail);
   if (heading && tail.slice(0, heading.index).trim()) {
     const hiddenMarker = LEARNING_BOUNDARY.replace(/[^\r\n]/g, ' ');
-    return maskSummaries((source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index)).trimEnd());
+    return source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index);
   }
-  return maskSummaries(source.slice(0, boundary).trimEnd());
+  return source.slice(0, boundary);
 }
 export function paragraphRanges(text: string): { start: number; end: number }[] {
   const ranges = [];

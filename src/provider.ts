@@ -1,5 +1,5 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import type { ArticlePart, ArticleSummary, SectionSummary } from './article-summary';
+import { sectionSource, type ArticlePart, type ArticleSummary, type SectionSummary } from './article-summary';
 import type { ResultRequest } from './result-cache';
 import { paragraphRanges } from './anchors';
 import { proseText } from './markdown-source';
@@ -101,7 +101,7 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
     const part = article.parts[sections.length];
     const section = await requestJson(key, transport,
       'Summarize this section of an English article in Simplified Chinese. Preserve the author’s argument and qualifications. Return JSON with a concise title and summary under 300 Chinese characters, both strings.',
-      {section: article.source.slice(part.start, part.end)}, validateSection, options);
+      {section: sectionSource(article, part).text}, validateSection, options);
     await checkSource();
     sections.push(section);
     onProgress({...article, sections: [...sections]});
@@ -121,9 +121,9 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
 
 export async function translateArticlePart(article: ArticleSummary, part: ArticlePart, key: string, transport: Transport,
   options?: ResultRequest): Promise<ParagraphTranslation[]> {
-  const text = article.source.slice(part.start, part.end);
+  const {text, sourceOffset} = sectionSource(article, part);
   const paragraphs = paragraphRanges(text).map(({start, end}) => ({
-    start: part.start + start, end: part.start + end,
+    start: sourceOffset(start, 'start'), end: sourceOffset(end, 'end'),
     source: article.selection && ('sidebar' in article.selection || article.selection.readOnly)
       ? text.slice(start, end).trim() : proseText(text.slice(start, end)),
   })).filter(paragraph => paragraph.source);

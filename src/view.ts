@@ -1,11 +1,12 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
-import { articleFinished, articlePartIsLocated, type ArticleSummary } from './article-summary';
+import { articleFinished, articlePartIsLocated, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
 import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment, type ParagraphTranslation } from './reading-layout';
+import { savedSectionTranslation } from './section-translation';
 import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
@@ -219,8 +220,16 @@ export class DigestView extends ItemView {
         row.createEl('h5', {text:section.title, cls:'note-digest-original'});
         const part = article.parts[index];
         const summary = row.createEl('p', {text:section.summary, cls:'note-digest-result'});
-        this.claudianContexts.set(summary, {title:`${title} · ${section.title}`, source:article.source.slice(part.start, part.end).trim()});
+        this.claudianContexts.set(summary, {title:`${title} · ${section.title}`, source:sectionSource(article, part).text.trim()});
         this.renderSectionActions(row, article, index);
+      });
+    }
+    if (article?.supplements?.length && !running) {
+      el.createEl('h4', {text:'文末补充'});
+      article.supplements.forEach((supplement, index) => {
+        const row = el.createDiv({cls:'note-digest-supplement'});
+        row.createEl('h5', {text:supplement.label});
+        this.renderSectionActions(row, article, article.parts.length + index);
       });
     }
     if (article && finished) {
@@ -232,26 +241,35 @@ export class DigestView extends ItemView {
   }
   private renderSectionActions(parent: HTMLElement, article: ArticleSummary, index: number): void {
     const actions = parent.createDiv({cls:'note-digest-actions'});
-    if (articlePartIsLocated(article)) {
-      const locate = actions.createEl('button', {text:'定位原文'});
-      locate.onclick = () => { void this.plugin.revealArticlePart(article, article.parts[index]); };
-    }
+    this.renderLocateSection(actions, article, index);
     const translate = actions.createEl('button', {text:'翻译本节'});
     translate.onclick = () => { void this.plugin.translateSection(article, index, this.contentEl.scrollTop); };
+  }
+  private renderLocateSection(actions: HTMLElement, article: ArticleSummary, index: number): void {
+    if (articlePartIsLocated(article)) {
+      const locate = actions.createEl('button', {text:'定位原文'});
+      locate.onclick = () => { void this.plugin.revealArticlePart(article, sectionAt(article, index)); };
+    }
   }
   renderSectionTranslation(article: ArticleSummary, index: number, scroll: number, paragraphs: ParagraphTranslation[],
     status = '', running = false): void {
     const el = this.startRender();
     el.scrollTop = 0;
-      this.renderToolbar(el);
+    this.renderToolbar(el);
     const actions = el.createDiv({cls:'note-digest-actions'});
     const back = actions.createEl('button', {text:'返回摘要'});
     back.onclick = () => { void this.plugin.returnToDigest(this, article, scroll); };
+    this.renderLocateSection(actions, article, index);
     if (!running) {
+      if (articlePartIsLocated(article)) {
+        const undo = !!savedSectionTranslation(article, sectionAt(article, index));
+        if (undo || paragraphs.length) this.renderWriteSection(actions, article, index, scroll, paragraphs, undo);
+      }
       const regenerate = actions.createEl('button', {text:paragraphs.length ? '重新生成' : '重试翻译'});
       regenerate.onclick = () => { void this.plugin.translateSection(article, index, scroll, !!paragraphs.length); };
     }
-    el.createEl('h3', {text:article.sections[index]?.title || '本节翻译'});
+    const title = article.sections[index]?.title ?? article.supplements?.[index - article.parts.length]?.label;
+    el.createEl('h3', {text:title || '本节翻译'});
     if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
     for (const {source, translation} of paragraphs) {
       const pair = el.createDiv({cls:'note-digest-paragraph'});
@@ -259,6 +277,25 @@ export class DigestView extends ItemView {
       pair.createEl('p', {text:translation, cls:'note-digest-result'});
       this.claudianContexts.set(pair, {source});
     }
+  }
+  private renderWriteSection(actions: HTMLElement, article: ArticleSummary, index: number, scroll: number,
+    paragraphs: ParagraphTranslation[], undo: boolean): void {
+    const button = actions.createEl('button', {text:undo ? '撤销加入译文' : '将本节译文加入原文'});
+    const revision = this.renderRevision;
+    button.onclick = async () => {
+      const controls = [...actions.querySelectorAll('button')];
+      controls.forEach(control => { control.disabled = true; });
+      try {
+        const changed = await this.plugin.writeSectionTranslation(article, index, paragraphs, undo);
+        if (revision !== this.renderRevision) return;
+        if (changed.selection) this.selectionView = changed.selection;
+        else if (this.selectionView && 'path' in this.selectionView && this.selectionView.path === article.path) this.selectionView = undefined;
+        this.renderSectionTranslation(changed, index, scroll, paragraphs, undo ? '已撤销本节译文。' : '已将本节译文加入原文下方。');
+      } catch (error) {
+        if (revision === this.renderRevision) this.renderSectionTranslation(article, index, scroll, paragraphs,
+          error instanceof Error ? error.message : '写入失败。');
+      }
+    };
   }
   private renderOverviewSave(el: HTMLElement, article: ArticleSummary): void {
     const actions = el.createDiv({cls:'note-digest-actions'});

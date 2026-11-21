@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
 import {readingSnapshot,snapshot,type DigestResult} from '../src/core';
-import {planArticleSummary} from '../src/article-summary';
+import {planArticleSummary,sectionAt} from '../src/article-summary';
+import {changeSectionTranslation} from '../src/section-translation';
 const bundled=await build({entryPoints:['src/view.ts'],bundle:true,write:false,format:'cjs',external:['obsidian'],platform:'node'});
 function setup() {
   const dom=new JSDOM('<body></body>');const document=dom.window.document;
@@ -29,6 +30,10 @@ function setup() {
     translateSection:(...args:any[])=>calls.push(['translateSection',...args]),
     returnToDigest:(...args:any[])=>calls.push(['return',...args]),
     saveOverview:async (article:any)=>{calls.push(['saveOverview',article]);return {article};},
+    writeSectionTranslation:async (article:any,index:number,paragraphs:any,undo:boolean)=>{
+      calls.push(['writeSectionTranslation',index,undo]);
+      return changeSectionTranslation(article,sectionAt(article,index),paragraphs,undo);
+    },
     runSelectionAction:(action:any,selection:any)=>calls.push(['run',selection,action]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
   return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
@@ -195,6 +200,29 @@ test('section actions open a separate bilingual page and return to the original 
   assert.deepEqual(calls.at(-1), ['translateSection', article, 0, 142, true]);
   button('返回摘要').click();
   assert.deepEqual(calls.at(-1), ['return', view, article, 142]);
+});
+
+test('bilingual page locates the section and switches between writing and one-click undo', async () => {
+  const {view, document, calls} = setup();
+  const article = planArticleSummary('a.md', '# Body\n\nFirst.\n\n**Notes**\n\nEndnote.');
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(control => control.textContent === text)!;
+  view.renderArticleSummary(article.path, {...article, sections:[{title:'正文',summary:'正文摘要'}], overview:'全文概览'});
+  const notes = document.querySelector('.note-digest-supplement')!;
+  assert.match(notes.textContent!, /Notes定位原文翻译本节/);
+  const index = article.parts.length;
+  const paragraphs = [{source:'Endnote.',translation:'注释。',start:27,end:35}];
+  view.renderSectionTranslation(article, index, 42, paragraphs);
+  button('定位原文').click();
+  assert.deepEqual(calls.at(-1), ['locate', article, article.supplements![0]]);
+  assert.equal(document.querySelector('h3')?.textContent, 'Notes');
+  const event = new (domEvent(document))('click') as any;
+  await button('将本节译文加入原文').onclick!(event);
+  assert.deepEqual(calls.at(-1), ['writeSectionTranslation', index, false]);
+  assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已将本节译文加入/);
+  await button('撤销加入译文').onclick!(event);
+  assert.deepEqual(calls.at(-1), ['writeSectionTranslation', index, true]);
+  assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已撤销本节译文/);
+  assert.ok(button('将本节译文加入原文'));
 });
 
 

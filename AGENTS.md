@@ -20,6 +20,7 @@
 - src/anchors.ts：排除生成学习区与段落锚点。
 - src/markdown-source.ts：Markdown 结构、阅读选区映射和插入位置。
 - src/article-summary.ts：全文摘要的本地分节与原文偏移。
+- src/section-translation.ts：构建分节译文写入和撤销，核对生成区块、原文和 Markdown 结构。
 - src/reading-layout.ts：长选区判断、本地段落范围、结果展示规则。
 - src/reading-actions.ts：展示用精简语境和阅读快捷键保护；不改变 AI 分析上下文。
 - src/highlights.ts：原文范围核对和 DOM 高亮；不修改源 Markdown。

@@ -11,12 +11,16 @@ type ReadingBlock = Extract<Nodes, {type: 'paragraph' | 'heading' | 'tableCell'}
 
 const tableExtensions = {extensions: [gfmTable()], mdastExtensions: [gfmTableFromMarkdown()]};
 
+export function parseMarkdown(source: string): Root {
+  return fromMarkdown(source, tableExtensions);
+}
+
 export function markdownBody(source: string): Root {
   const body = articleBody(source).replace(
     /^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/,
     properties => properties.replace(/[^\r\n]/g, ' '),
   );
-  return fromMarkdown(body, tableExtensions);
+  return parseMarkdown(body);
 }
 
 /** Readable text from a local Markdown span, keeping labels and excluding media markup. */
@@ -32,7 +36,7 @@ export function proseText(source: string): string {
     }
     return '';
   }
-  return read(fromMarkdown(source, tableExtensions)).trim();
+  return read(parseMarkdown(source)).trim();
 }
 
 function range(node: Nodes): SourceRange {
