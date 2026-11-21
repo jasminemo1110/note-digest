@@ -73,3 +73,41 @@ test('a malformed replacement leaves the previous validated result available', a
   assert.equal((await run()).translation, '原来的结果');
   assert.equal(calls, 2);
 });
+
+test('persistent entry limit protects old results used in memory and in a fresh cache instance', async () => {
+  const local = storage();
+  const cache = new ResultCache(local);
+  const run = (instance: ResultCache, index: number, value = String(index)) =>
+    instance.run(index, String, async () => value, {});
+  const resultsKey = 'note-digest-results-v1';
+  const orderKey = 'note-digest-results-access-order-v1';
+  for (let i = 0; i < 256; i++) await run(cache, i);
+  const before = local.values.get(resultsKey);
+  assert.equal(await run(cache, 0, 'unexpected request'), '0');
+  assert.equal(await run(new ResultCache(local), 1, 'unexpected request'), '1');
+  assert.strictEqual(local.values.get(resultsKey), before, 'cache hits must not rewrite the stored results');
+  const touched = local.values.get(orderKey);
+  assert.equal(await run(new ResultCache(local), 1, 'unexpected request'), '1');
+  assert.strictEqual(local.values.get(orderKey), touched, 'the most recent entry need not be promoted twice');
+  await run(new ResultCache(local), 256);
+  const reopened = new ResultCache(local);
+  assert.equal(await run(reopened, 0, 'unexpected request'), '0');
+  assert.equal(await run(reopened, 1, 'unexpected request'), '1');
+  assert.equal(await run(reopened, 2, 'replacement for evicted entry'), 'replacement for evicted entry');
+});
+
+test('persistent size limit removes whole least-recently-used results and supports existing caches', async () => {
+  const local = storage();
+  const cache = new ResultCache(local);
+  const payload = '译'.repeat(300_000);
+  const run = (instance: ResultCache, name: string, value: string) =>
+    instance.run(name, String, async () => value, {});
+  for (const name of ['old but read again', 'old and unread', 'newer']) await run(cache, name, name + payload);
+  local.values.delete('note-digest-results-access-order-v1');
+  assert.equal(await run(new ResultCache(local), 'old but read again', 'unexpected request'), 'old but read again' + payload);
+  await run(new ResultCache(local), 'latest', 'latest' + payload);
+  const reopened = new ResultCache(local);
+  assert.equal(await run(reopened, 'old but read again', 'unexpected request'), 'old but read again' + payload);
+  assert.equal(await run(reopened, 'newer', 'unexpected request'), 'newer' + payload);
+  assert.equal(await run(reopened, 'old and unread', 'replacement for evicted entry'), 'replacement for evicted entry');
+});
