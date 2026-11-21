@@ -6,6 +6,7 @@ export interface LocalCacheStorage {
 }
 
 const PREFERENCE = 'note-digest-retain-results';
+const PREFERENCE_DISABLED = 'disabled';
 const RESULTS = 'note-digest-results-v1';
 const MAX_ENTRIES = 256;
 const MAX_SIZE = 1_000_000;
@@ -36,13 +37,17 @@ export class ResultCache {
   constructor(private readonly storage: LocalCacheStorage) {}
 
   get persistent(): boolean {
-    try { return this.storage.load(PREFERENCE) === true; }
+    try {
+      const preference = this.storage.load(PREFERENCE);
+      return preference === true || preference == null;
+    }
     catch { return false; }
   }
 
   setPersistent(enabled: boolean): void {
     if (!enabled) this.storage.save(RESULTS, null);
-    this.storage.save(PREFERENCE, enabled ? true : null);
+    // Obsidian's local preference reader treats stored false as an absent value.
+    this.storage.save(PREFERENCE, enabled ? true : PREFERENCE_DISABLED);
     if (enabled) this.persist(this.memory);
   }
 

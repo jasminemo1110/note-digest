@@ -5,7 +5,7 @@ import { ResultCache } from '../src/result-cache';
 
 function storage() {
   const values = new Map<string, unknown>();
-  return { values, load: (key: string) => values.get(key),
+  return { values, load: (key: string) => values.get(key) || null,
     save: (key: string, value: unknown) => { if (value === null) values.delete(key); else values.set(key, value); } };
 }
 
@@ -13,7 +13,7 @@ function response(value: unknown) {
   return {status: 200, json: {choices: [{finish_reason: 'stop', message: {content: JSON.stringify(value)}}]}};
 }
 
-test('cache deduplicates in-flight requests and only persists when enabled', async () => {
+test('cache persists by default, deduplicates in-flight requests and remembers an explicit opt-out', async () => {
   const local = storage();
   const cache = new ResultCache(local);
   let calls = 0;
@@ -21,17 +21,22 @@ test('cache deduplicates in-flight requests and only persists when enabled', asy
   const selected = {text: 'right', context: 'Turn right.'};
   const translate = (cache: ResultCache, regenerate = false, onRequest?: () => void) =>
     digest(selected, 'translate', 'test', transport, {cache, regenerate, onRequest});
+  assert.equal(cache.persistent, true);
   const [first, second] = await Promise.all([translate(cache), translate(cache)]);
   assert.deepEqual(first, second);
   assert.equal(calls, 1);
-  assert.equal(local.values.size, 0);
   assert.equal((await translate(cache, false, () => assert.fail('cache hit showed request progress'))).translation, '译文 1');
-  cache.setPersistent(true);
   assert.equal((await translate(new ResultCache(local))).translation, '译文 1');
   assert.equal((await translate(cache, true)).translation, '译文 2');
   assert.equal((await translate(new ResultCache(local))).translation, '译文 2');
   cache.setPersistent(false);
   assert.equal((await translate(cache)).translation, '译文 2');
+  const restarted = new ResultCache(local);
+  assert.equal(restarted.persistent, false);
+  assert.deepEqual([...local.values.values()], ['disabled']);
+  assert.equal((await translate(restarted)).translation, '译文 3');
+  assert.deepEqual([...local.values.values()], ['disabled']);
+  restarted.setPersistent(true);
   assert.equal((await translate(new ResultCache(local))).translation, '译文 3');
 });
 
