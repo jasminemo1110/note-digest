@@ -1,4 +1,4 @@
-import { articleBody, articleStart, frontmatterEnd, readingProjection, savedSummaryRanges, SUMMARY_CALLOUT, SUMMARY_START, SUMMARY_END } from './anchors';
+import { articleBody, articleStart, frontmatterEnd, paragraphRanges, readingProjection, savedSummaryRanges, SUMMARY_CALLOUT, SUMMARY_START, SUMMARY_END } from './anchors';
 import { escapeMarkdown, rebaseSelectionAfterInsertion, type DigestSelection, type InsertionReceipt } from './core';
 import { parseMarkdown, proseText } from './markdown-source';
 
@@ -148,6 +148,31 @@ export function sectionAt(article: ArticleSummary, index: number): ArticlePart {
 
 export function sectionSource(article: ArticleSummary, part: ArticlePart) {
   return readingProjection(article.source, part.start, part.end);
+}
+
+/** Keep the display, AI request, and write offsets tied to the same local paragraphs. */
+export function articleTranslationParagraphs(article: ArticleSummary, part: ArticlePart) {
+  const {text, sourceOffset} = sectionSource(article, part);
+  const blocks = parseMarkdown(text).children;
+  const ranges: ArticlePart[] = [];
+  let block = 0;
+  for (const range of paragraphRanges(text)) {
+    while (block < blocks.length && blocks[block].position!.end.offset! <= range.start) block++;
+    const nextBlock = blocks[block];
+    const previous = ranges.at(-1);
+    if (previous && nextBlock && nextBlock.position!.start.offset! < range.start) previous.end = range.end;
+    else ranges.push(range);
+  }
+  return ranges.flatMap(({start, end}) => {
+    const raw = text.slice(start, end);
+    const source = article.selection && ('sidebar' in article.selection || article.selection.readOnly)
+      ? raw.trim() : proseText(raw);
+    if (!source) return [];
+    const contentLength = raw.trimEnd().length;
+    const trailingSpaces = raw.slice(contentLength).match(/^[ \t]*/)![0].length;
+    return [{source, start: sourceOffset(start, 'start'), end: sourceOffset(end, 'end'),
+      insertionOffset: sourceOffset(start + contentLength + trailingSpaces, 'end')}];
+  });
 }
 
 export function translationChunks(article: ArticleSummary, part: ArticlePart): ArticlePart[] {

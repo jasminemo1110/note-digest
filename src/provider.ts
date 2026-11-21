@@ -1,8 +1,6 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import { sectionSource, type ArticlePart, type ArticleSummary, type SectionSummary } from './article-summary';
+import { articleTranslationParagraphs, sectionSource, type ArticlePart, type ArticleSummary, type SectionSummary } from './article-summary';
 import type { ResultRequest } from './result-cache';
-import { paragraphRanges } from './anchors';
-import { proseText } from './markdown-source';
 import type { ParagraphTranslation } from './reading-layout';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
 import { MAX_COMMON_USAGES, validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
@@ -121,12 +119,7 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
 
 export async function translateArticlePart(article: ArticleSummary, part: ArticlePart, key: string, transport: Transport,
   options?: ResultRequest): Promise<ParagraphTranslation[]> {
-  const {text, sourceOffset} = sectionSource(article, part);
-  const paragraphs = paragraphRanges(text).map(({start, end}) => ({
-    start: sourceOffset(start, 'start'), end: sourceOffset(end, 'end'),
-    source: article.selection && ('sidebar' in article.selection || article.selection.readOnly)
-      ? text.slice(start, end).trim() : proseText(text.slice(start, end)),
-  })).filter(paragraph => paragraph.source);
+  const paragraphs = articleTranslationParagraphs(article, part);
   if (!paragraphs.length) throw new Error('此节没有可翻译的文字。');
   const translations = await requestJson(key, transport,
     'Translate the English paragraphs into Simplified Chinese using the other paragraphs for context. ' +
@@ -144,7 +137,7 @@ export async function translateArticlePart(article: ArticleSummary, part: Articl
       });
       return {translations: checked.sort((left, right) => left.id - right.id)};
     }, options);
-  return paragraphs.map((paragraph, index) => ({...paragraph, translation: translations.translations[index].translation}));
+  return paragraphs.map(({source, start, end}, index) => ({source, start, end, translation: translations.translations[index].translation}));
 }
 
 /** Paragraph identities and original text come from the app, never the model. */

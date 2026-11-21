@@ -262,7 +262,7 @@ export class DigestView extends ItemView {
     this.renderLocateSection(actions, article, index);
     if (!running) {
       if (articlePartIsLocated(article)) {
-        const undo = !!savedSectionTranslation(article, sectionAt(article, index));
+        const undo = savedSectionTranslation(article, sectionAt(article, index));
         if (undo || paragraphs.length) this.renderWriteSection(actions, article, index, scroll, paragraphs, undo);
       }
       const regenerate = actions.createEl('button', {text:paragraphs.length ? '重新生成' : '重试翻译'});
@@ -290,7 +290,7 @@ export class DigestView extends ItemView {
         if (revision !== this.renderRevision) return;
         if (changed.selection) this.selectionView = changed.selection;
         else if (this.selectionView && 'path' in this.selectionView && this.selectionView.path === article.path) this.selectionView = undefined;
-        this.renderSectionTranslation(changed, index, scroll, paragraphs, undo ? '已撤销本节译文。' : '已将本节译文加入原文下方。');
+        this.renderSectionTranslation(changed, index, scroll, paragraphs, undo ? '已撤销本节译文。' : '已逐段加入本节译文。');
       } catch (error) {
         if (revision === this.renderRevision) this.renderSectionTranslation(article, index, scroll, paragraphs,
           error instanceof Error ? error.message : '写入失败。');

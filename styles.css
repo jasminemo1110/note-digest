@@ -13,6 +13,7 @@
 .note-digest-toolbar button[aria-pressed="true"] { color: var(--text-on-accent); background: var(--interactive-accent); }
 .callout[data-callout="note-digest-summary"] { --callout-icon: lucide-align-left; }
 .callout[data-callout="note-digest-translation"] { --callout-icon: lucide-languages; }
+.callout[data-callout="note-digest-translation"][data-callout-metadata="paragraph"] > .callout-title { display: none; }
 .note-digest-original { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-digest-paragraph { margin-bottom: 20px; }
 .note-digest-save { border-top: 1px solid var(--background-modifier-border); padding-top: 12px; }

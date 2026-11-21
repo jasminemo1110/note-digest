@@ -7,13 +7,14 @@ export const SUMMARY_START = '<!-- note-digest:summary -->';
 export const SUMMARY_END = '<!-- note-digest:summary-end -->';
 const summaryBlock = /^([ \t\r\n]*)<!-- note-digest:summary -->[ \t]*\r?\n\r?\n> \[!note-digest-summary\]\+ [^\r\n]+\r?\n(?:>[^\r\n]*\r?\n)+\r?\n<!-- note-digest:summary-end -->[ \t]*(?:\r?\n|$)/;
 export const SECTION_TRANSLATION_CALLOUT = 'note-digest-translation';
-const sectionTranslationBlock = /(?<nl>\r?\n)\k<nl><!-- note-digest:section-translation:(?<length>\d{1,8}):(?<digest>[0-9a-f]{64}) -->\k<nl>\k<nl>(?<content>> \[!note-digest-translation\] 本节译文(?:\k<nl>>[^\r\n]*)*)\k<nl>\k<nl><!-- note-digest:section-translation-end -->\k<nl>\k<nl>/g;
+const sectionTranslationBlock = /(?<nl>\r?\n)\k<nl><!-- note-digest:section-translation:(?<length>\d{1,8})(?::(?<paragraph>\d{1,8})\/(?<total>\d{1,8}))?:(?<digest>[0-9a-f]{64}) -->\k<nl>\k<nl>(?<content>> \[!note-digest-translation(?:\|paragraph)?\] (?:本节译文|译文)(?:\k<nl>>[^\r\n]*)*)\k<nl>\k<nl><!-- note-digest:section-translation-end -->\k<nl>\k<nl>/g;
 
 export function sectionTranslationRanges(source: string) {
-  return [...source.matchAll(sectionTranslationBlock)].map(match => ({
-    start: match.index, end: match.index + match[0].length,
-    length: Number(match.groups!.length), content: match.groups!.content, digest: match.groups!.digest,
-  }));
+  return [...source.matchAll(sectionTranslationBlock)].map(match => {
+    const {length, content, digest, paragraph, total} = match.groups!;
+    return {start: match.index, end: match.index + match[0].length, length: Number(length), content, digest,
+      ...(paragraph !== undefined && {paragraph: Number(paragraph), total: Number(total)})};
+  });
 }
 
 /** Omit saved translations for AI and section planning, with offsets back to the real note. */

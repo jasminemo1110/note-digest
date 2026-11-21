@@ -210,7 +210,7 @@ test('bilingual page locates the section and switches between writing and one-cl
   const notes = document.querySelector('.note-digest-supplement')!;
   assert.match(notes.textContent!, /Notes定位原文翻译本节/);
   const index = article.parts.length;
-  const paragraphs = [{source:'Endnote.',translation:'注释。',start:27,end:35}];
+  const paragraphs = [{source:'Notes',translation:'注释',start:15,end:24}, {source:'Endnote.',translation:'注释。',start:27,end:35}];
   view.renderSectionTranslation(article, index, 42, paragraphs);
   button('定位原文').click();
   assert.deepEqual(calls.at(-1), ['locate', article, article.supplements![0]]);
@@ -218,7 +218,7 @@ test('bilingual page locates the section and switches between writing and one-cl
   const event = new (domEvent(document))('click') as any;
   await button('将本节译文加入原文').onclick!(event);
   assert.deepEqual(calls.at(-1), ['writeSectionTranslation', index, false]);
-  assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已将本节译文加入/);
+  assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已逐段加入本节译文/);
   await button('撤销加入译文').onclick!(event);
   assert.deepEqual(calls.at(-1), ['writeSectionTranslation', index, true]);
   assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已撤销本节译文/);
