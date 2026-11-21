@@ -14,12 +14,14 @@ import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } f
 import type { RenderedSection, TableCellPosition } from './markdown-source';
 import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
 import { appendClaudianDraft, getClaudian } from './claudian-draft';
+import { ResultCache } from './result-cache';
 
 type CodeMirrorEditor = Editor & {cm?: {posAtDOM(node: Node, offset?: number): number}};
 
 export default class NoteDigestPlugin extends Plugin {
   collection!: CollectionStore;
   private storage!: StoragePort;
+  resultCache!: ResultCache;
   get secretName(): string { return this.collection.secretName; }
   private generation = 0;
   private stopped = false;
@@ -33,6 +35,10 @@ export default class NoteDigestPlugin extends Plugin {
   private recentClaudianLeaf?: WorkspaceLeaf;
   async onload(): Promise<void> {
     this.stopped = false;
+    this.resultCache = new ResultCache({
+      load: key => this.app.loadLocalStorage(key),
+      save: (key, value) => this.app.saveLocalStorage(key, value),
+    });
     const data = await this.loadData();
     this.storage = vaultStorage(this.app, value => this.saveData(value));
     this.collection = new CollectionStore(loadCollection(data), this.storage);
@@ -269,7 +275,6 @@ export default class NoteDigestPlugin extends Plugin {
     try {
       panel = await this.openPanel();
       if (!isCurrent()) return;
-      panel.renderArticleSummary(job.path, article, '正在读取正文…', true);
       const checkActive = () => {
         if (!isCurrent() || job.cancelled) throw new Error('摘要已停止。');
         if (this.app.workspace.getActiveFile() !== file) throw new Error('已切换文章，摘要已停止。');
@@ -291,17 +296,18 @@ export default class NoteDigestPlugin extends Plugin {
           throw new Error('原文已有变化，请重新总结全文。');
         }
       };
-      const renderProgress = (snapshot: ArticleSummary) => {
-        if (!isCurrent() || job.cancelled) return;
-        article = snapshot;
-        const done = snapshot.sections.length;
-        const total = snapshot.parts.length;
+      const renderRequest = () => {
+        if (!isCurrent() || job.cancelled || !article) return;
+        const done = article.sections.length;
+        const total = article.parts.length;
         const status = done < total ? `正在总结第 ${done + 1}/${total} 节…` : '正在生成全文概览…';
-        panel!.renderArticleSummary(job.path, snapshot, snapshot.overview ? '' : status, !snapshot.overview);
+        panel!.renderArticleSummary(job.path, article, status, true);
       };
-      renderProgress(article);
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      await summarizeArticle(article, key ?? '', requestUrl, checkSource, renderProgress);
+      await summarizeArticle(article, key ?? '', requestUrl, checkSource, snapshot => {
+        article = snapshot;
+        if (snapshot.overview) panel!.renderArticleSummary(job.path, snapshot);
+      }, {cache: this.resultCache, onRequest: renderRequest});
     } catch (error) {
       if (!isCurrent()) return;
       const message = job.cancelled ? '摘要已停止。' : error instanceof Error ? error.message : '摘要失败，请重试。';
@@ -440,7 +446,6 @@ export default class NoteDigestPlugin extends Plugin {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
-    panel.render(selection, undefined, '正在请求…', action);
     try {
       const article = 'path' in selection ? selection : undefined;
       const file = article ? this.app.vault.getFileByPath(article.path) : null;
@@ -451,10 +456,13 @@ export default class NoteDigestPlugin extends Plugin {
         return previousResult;
       }
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
+      const options = {cache: this.resultCache, onRequest: () => {
+        if (generation === this.generation) panel.render(selection, undefined, '正在请求…', action);
+      }};
       const result = article && action === 'translate' && isLongSelection(article.text) && canCollectSelection(article)
         ? await translateParagraphs(article,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,
-          (done,total)=>{ if(generation===this.generation) panel.render(selection,undefined,`正在翻译 ${done}/${total} 段…`,action); })
-        : await digest(selection, action, key ?? '', requestUrl);
+          (done,total)=>{ if(generation===this.generation) panel.render(selection,undefined,`正在翻译 ${done}/${total} 段…`,action); }, options)
+        : await digest(selection, action, key ?? '', requestUrl, options);
       if (generation !== this.generation) return;
       if (article && file && await this.app.vault.read(file) !== article.source) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
