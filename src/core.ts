@@ -1,4 +1,4 @@
-import { articleBody } from './anchors';
+import { articleBody, articleStart } from './anchors';
 import { insertionTarget, markdownBody, markdownStructure, mapReadingRange, tableCellSourceRange, type RenderedSection, type TableCellPosition } from './markdown-source';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 export type SourceLanguage = 'en' | 'ja';
@@ -48,9 +48,12 @@ export function snapshot(path: string, source: string, text: string, offset?: nu
   if (offset === undefined && body.indexOf(text, start + 1) !== -1) throw new Error('原文有多处相同文本，请改用编辑模式精确选择。');
   const end = start + text.length;
   const cell = tableCellSourceRange(source, {start, end});
-  const contextStart = Math.max(cell?.start ?? 0, start - 1200);
+  const proseStart = articleStart(source);
+  const contextStart = Math.max(cell?.start ?? (start >= proseStart ? proseStart : 0), start - 1200);
   const context = body.slice(contextStart, Math.min(cell?.end ?? body.length, end + 1200));
-  return {path, source, text, start, end, context, contextOffset: cell ? start - contextStart : undefined};
+  const offsetInContext = start - contextStart;
+  const repeated = context.indexOf(text) !== offsetInContext || context.indexOf(text, offsetInContext + 1) >= 0;
+  return {path, source, text, start, end, context, contextOffset: cell || repeated ? offsetInContext : undefined};
 }
 export function readingSnapshot(path: string, source: string, text: string,
   rendered?: {section?: RenderedSection; paragraph: string; offset: number; cell?: TableCellPosition; tag?: string},

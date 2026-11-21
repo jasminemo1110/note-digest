@@ -1,14 +1,14 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
 import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
-import { digest, summarizeArticle, translateParagraphs } from './provider';
-import { planArticleSummary, type ArticlePart, type ArticleSummary } from './article-summary';
+import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
+import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
 import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges, tableHighlightRanges } from './highlights';
-import { articleBody, locateAnchor } from './anchors';
+import { articleBody, locateAnchor, SUMMARY_CALLOUT } from './anchors';
 import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
 import type { RenderedSection, TableCellPosition } from './markdown-source';
@@ -26,7 +26,7 @@ export default class NoteDigestPlugin extends Plugin {
   private generation = 0;
   private stopped = false;
   private quoteBusy = false;
-  private summaryJob?: { generation: number; path: string; cancelled: boolean };
+  private summaryJob?: { generation: number; path: string; selection?: DigestSelection; cancelled: boolean };
   private renderedSections = new WeakMap<HTMLElement, RenderedSection & {path: string}>();
   private selectionButton?: HTMLButtonElement;
   private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
@@ -47,7 +47,7 @@ export default class NoteDigestPlugin extends Plugin {
     this.addRibbonIcon('book-open-text', '打开 Note Digest', () => { void this.openPanel(); });
     this.addCommand({ id: 'open-learning-panel', name: '打开学习侧栏', callback: () => { void this.openPanel(); } });
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
-    this.addCommand({ id: 'summarize-article', name: '总结全文', callback: () => { void this.summarizeCurrentArticle(); } });
+    this.addCommand({ id: 'summarize-article', name: 'Digest 全文', callback: () => { void this.summarizeCurrentArticle(); } });
     this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
     this.app.workspace.onLayoutReady(() => {
       if (this.stopped) return;
@@ -255,76 +255,138 @@ export default class NoteDigestPlugin extends Plugin {
   stopArticleSummary(): void {
     if (this.summaryJob?.generation === this.generation) this.summaryJob.cancelled = true;
   }
-  async summarizeCurrentArticle(previous?: ArticleSummary): Promise<void> {
-    const file = this.app.workspace.getActiveFile();
-    if (!file || file.extension !== 'md' || this.collection.isLearningNote(file.path)) {
-      new Notice('请先打开要总结的 Markdown 原文。');
+  summarizeCurrentArticle(regenerate = false): Promise<void> {
+    return this.showDigest(undefined, regenerate);
+  }
+  async summarizeSelection(fallback?: DigestSelection): Promise<void> {
+    try { await this.showDigest(await this.latestSelection(fallback)); }
+    catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
+  }
+  retryDigest(article?: ArticleSummary, regenerate = false): Promise<void> {
+    return this.showDigest(article?.selection, regenerate);
+  }
+  private async showDigest(selection?: DigestSelection, regenerate = false): Promise<void> {
+    const active = this.app.workspace.getActiveFile();
+    const file = selection && 'sidebar' in selection ? null : active;
+    if ((!selection || 'path' in selection) && (!file || file.extension !== 'md' ||
+        this.collection.isLearningNote(file.path) || (selection && selection.path !== file.path))) {
+      new Notice('请先打开要 Digest 的 Markdown 原文。');
       return;
     }
-    if (previous && file.path !== previous.path) {
-      new Notice('请打开摘要对应的原文后再继续。');
-      return;
-    }
-    if (this.summaryJob?.generation === this.generation && !this.summaryJob.cancelled && this.summaryJob.path === file.path) return;
-    const job = {generation: ++this.generation, path: file.path, cancelled: false};
+    const path = file?.path ?? '';
+    if (this.summaryJob?.generation === this.generation && !this.summaryJob.cancelled &&
+        this.summaryJob.path === path && this.summaryJob.selection === selection) return;
+    const job = {generation: ++this.generation, path, selection, cancelled: false};
     this.summaryJob = job;
     const isCurrent = () => job.generation === this.generation && !this.stopped;
-    let article = previous;
+    let article: ArticleSummary | undefined;
     let panel: DigestView | undefined;
     let stale = false;
+    const checkActive = () => {
+      if (!isCurrent() || job.cancelled) throw new Error('摘要已停止。');
+      if (file && this.app.workspace.getActiveFile() !== file) throw new Error('已切换文章，摘要已停止。');
+    };
     try {
       panel = await this.openPanel();
-      if (!isCurrent()) return;
-      const checkActive = () => {
-        if (!isCurrent() || job.cancelled) throw new Error('摘要已停止。');
-        if (this.app.workspace.getActiveFile() !== file) throw new Error('已切换文章，摘要已停止。');
-      };
       checkActive();
-      const source = await this.storage.read(job.path);
+      const source = file ? await this.storage.read(path) : null;
       checkActive();
-      if (source === null || (article && source !== article.source)) {
+      if (file && (source === null || (selection && 'path' in selection && selection.source !== source))) {
         stale = true;
-        throw new Error('原文已有变化，请重新总结全文。');
+        throw new Error('原文已修改，请重新选择或打开 Digest。');
       }
-      article ??= planArticleSummary(job.path, source);
+      article = selection ? planSelectedSummary(selection) : planArticleSummary(path, source!);
       const checkSource = async () => {
         checkActive();
-        const current = await this.storage.read(job.path);
+        if (!file) return;
+        const current = await this.storage.read(path);
         checkActive();
         if (current !== source) {
           stale = true;
-          throw new Error('原文已有变化，请重新总结全文。');
+          throw new Error('原文已修改，请重新打开 Digest。');
         }
       };
       const renderRequest = () => {
-        if (!isCurrent() || job.cancelled || !article) return;
+        checkActive();
+        if (!article) return;
         const done = article.sections.length;
         const total = article.parts.length;
         const status = done < total ? `正在总结第 ${done + 1}/${total} 节…` : '正在生成全文概览…';
-        panel!.renderArticleSummary(job.path, article, status, true);
+        panel!.renderArticleSummary(path, article, status, true);
       };
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      await summarizeArticle(article, key ?? '', requestUrl, checkSource, snapshot => {
-        article = snapshot;
-        if (snapshot.overview) panel!.renderArticleSummary(job.path, snapshot);
-      }, {cache: this.resultCache, onRequest: renderRequest});
+      await summarizeArticle(article, key ?? '', requestUrl, checkSource, current => {
+        article = current;
+        if (articleFinished(current)) panel!.renderArticleSummary(path, current);
+      }, {cache: this.resultCache, regenerate, onRequest: renderRequest});
     } catch (error) {
-      if (!isCurrent()) return;
-      const message = job.cancelled ? '摘要已停止。' : error instanceof Error ? error.message : '摘要失败，请重试。';
-      if (panel) panel.renderArticleSummary(job.path, stale ? undefined : article, message);
+      if (!isCurrent() || job.cancelled) return;
+      const message = error instanceof Error ? error.message : '摘要失败，请重试。';
+      if (panel) panel.renderArticleSummary(path, stale ? undefined : article, message, false, selection);
       else new Notice(message);
     } finally {
       if (this.summaryJob === job) this.summaryJob = undefined;
     }
   }
+  private async checkArticleSource(article: ArticleSummary): Promise<void> {
+    const expected = articleFileSource(article);
+    if (expected !== undefined && (this.app.workspace.getActiveFile()?.path !== article.path ||
+        await this.storage.read(article.path) !== expected)) throw new Error('原文已切换或修改，请重新打开 Digest。');
+  }
   async revealArticlePart(article: ArticleSummary, part: ArticlePart): Promise<void> {
     try {
-      const file = this.app.vault.getAbstractFileByPath(article.path);
-      if (!(file instanceof TFile) || await this.storage.read(article.path) !== article.source) throw new Error('原文已有变化，请重新总结全文。');
+      await this.checkArticleSource(article);
+      const file = this.app.vault.getFileByPath(article.path);
+      if (!file) throw new Error('无法定位原文。');
       const line = article.source.slice(0, part.start).split('\n').length - 1;
       const leaf = this.app.workspace.getLeavesOfType('markdown').find(leaf => leaf.view instanceof MarkdownView && leaf.view.file === file);
       await (leaf ?? this.app.workspace.getLeaf(false)).openFile(file, {active: true, eState: {line}});
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法定位原文。'); }
+  }
+  async translateSection(article: ArticleSummary, index: number, returnScroll: number, regenerate = false): Promise<void> {
+    const generation = ++this.generation;
+    const current = () => generation === this.generation && !this.stopped;
+    const panel = await this.openPanel();
+    try {
+      if (!current()) return;
+      await this.checkArticleSource(article);
+      if (!current()) return;
+      const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
+      const result = await translateArticlePart(article, article.parts[index], key ?? '', requestUrl, {
+        cache: this.resultCache, regenerate,
+        onRequest: () => {
+          if (!current()) throw new Error('操作已取消。');
+          panel.renderSectionTranslation(article, index, returnScroll, [], '正在翻译本节…', true);
+        },
+      });
+      if (!current()) return;
+      await this.checkArticleSource(article);
+      if (current()) panel.renderSectionTranslation(article, index, returnScroll, result);
+    } catch (error) {
+      if (current()) panel.renderSectionTranslation(article, index, returnScroll, [], error instanceof Error ? error.message : '翻译失败。');
+    }
+  }
+  async returnToDigest(panel: DigestView, article: ArticleSummary, scroll: number): Promise<void> {
+    const generation = ++this.generation;
+    try {
+      await this.checkArticleSource(article);
+      if (this.generation !== generation || this.stopped) return;
+      panel.renderArticleSummary(article.path, article);
+      panel.contentEl.scrollTop = scroll;
+    } catch (error) {
+      if (this.generation === generation && !this.stopped) panel.renderArticleSummary(article.path, undefined,
+        error instanceof Error ? error.message : '无法打开摘要。', false, article.selection);
+    }
+  }
+  async saveOverview(article: ArticleSummary): Promise<{article: ArticleSummary; receipt?: InsertionReceipt}> {
+    await this.checkArticleSource(article);
+    let receipt: InsertionReceipt | undefined;
+    await this.storage.update(article.path, current => {
+      if (current === null) throw new Error('找不到原文。');
+      receipt = overviewInsertion(current, article);
+      return receipt?.after ?? current;
+    });
+    return {article: receipt ? rebaseAfterOverview(article, receipt) : article, receipt};
   }
   private readSidebarSelection(selection: Selection | null, includeContext = true): SidebarSelection | undefined {
     if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
@@ -364,6 +426,9 @@ export default class NoteDigestPlugin extends Plugin {
     const nativeRange = selectionView === view && selection?.rangeCount === 1 ? selection.getRangeAt(0) : undefined;
     const capture = nativeRange && articleRange(nativeRange, view.contentEl, domText);
     const block = capture?.block;
+    if (nativeRange && [...view.contentEl.querySelectorAll(`[data-callout="${SUMMARY_CALLOUT}"]`)].some(el => nativeRange.intersectsNode(el))) {
+      throw new Error('请在英文原文中选择内容。');
+    }
     const widget = block?.closest<HTMLElement>('.cm-table-widget');
     const editing = view.getMode() === 'source';
     const cm = editing ? (view.editor as CodeMirrorEditor).cm : undefined;
@@ -416,6 +481,33 @@ export default class NoteDigestPlugin extends Plugin {
     }
     return readingSnapshot(path, body, domText, rendered, capture.context);
   }
+  private async latestSelection(fallback?: DigestSelection): Promise<DigestSelection> {
+    const live = window.getSelection();
+    const sidebar = this.readSidebarSelection(live);
+    if (sidebar) {
+      if (sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
+      return sidebar;
+    }
+    const selectedView = this.articleViewForSelection(live);
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const captured = selectedView ? await this.readArticleSelection(live, selectedView) :
+      active?.getMode() === 'source' && active.editor.getSelection().trim() ? await this.readArticleSelection(null, active) : undefined;
+    if (captured) {
+      if (captured.start >= 0 && fallback && 'path' in fallback && captured.path === fallback.path &&
+          captured.source === fallback.source && captured.start === fallback.start &&
+          captured.end === fallback.end && captured.text === fallback.text) return fallback;
+      return captured;
+    }
+    if (fallback && ('sidebar' in fallback || fallback.path === this.app.workspace.getActiveFile()?.path)) return fallback;
+    throw new Error('请先在原文中划选英文。');
+  }
+  async runSelectionAction(action: 'translate' | 'explain', fallback?: DigestSelection): Promise<void> {
+    try {
+      const selection = await this.latestSelection(fallback);
+      if (isLongSelection(selection.text)) throw new Error('请选择词语、短语或短句。多段文字可使用「Digest 选中段落」。');
+      await this.run(selection, action);
+    } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
+  }
   private async capture(action: 'digest' | 'quote' = 'digest'): Promise<void> {
     if (action === 'quote' && this.quoteBusy) return;
     if (action === 'quote') this.quoteBusy = true;
@@ -442,7 +534,7 @@ export default class NoteDigestPlugin extends Plugin {
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
     finally { if (action === 'quote') this.quoteBusy = false; }
   }
-  async run(selection: DigestSelection, action: Action, previousResult?: DigestResult): Promise<DigestResult | undefined> {
+  async run(selection: DigestSelection, action: Action, regenerate = false): Promise<DigestResult | undefined> {
     const generation = ++this.generation;
     const panel = await this.openPanel();
     if (generation !== this.generation) return;
@@ -451,13 +543,10 @@ export default class NoteDigestPlugin extends Plugin {
       const file = article ? this.app.vault.getFileByPath(article.path) : null;
       if (article && (!file || await this.app.vault.read(file) !== article.source)) throw new Error('原文已修改，请重新选择。');
       if (generation !== this.generation) return;
-      if (previousResult) {
-        panel.render(selection, previousResult, '', action);
-        return previousResult;
-      }
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;
-      const options = {cache: this.resultCache, onRequest: () => {
-        if (generation === this.generation) panel.render(selection, undefined, '正在请求…', action);
+      const options = {cache: this.resultCache, regenerate, onRequest: () => {
+        if (generation !== this.generation || this.stopped) throw new Error('操作已取消。');
+        panel.render(selection, undefined, '正在请求…', action);
       }};
       const result = article && action === 'translate' && isLongSelection(article.text) && canCollectSelection(article)
         ? await translateParagraphs(article,key ?? '',requestUrl,()=>generation===this.generation && !this.stopped,

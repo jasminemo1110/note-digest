@@ -1,6 +1,9 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import type { ArticleSummary, SectionSummary } from './article-summary';
+import type { ArticlePart, ArticleSummary, SectionSummary } from './article-summary';
 import type { ResultRequest } from './result-cache';
+import { paragraphRanges } from './anchors';
+import { proseText } from './markdown-source';
+import type { ParagraphTranslation } from './reading-layout';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
 import { MAX_COMMON_USAGES, validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
 
@@ -31,7 +34,8 @@ Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, 
     ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the word or expression being explained.'
     : '';
   return requestJson(key, requestUrl, languageInstruction('en') +
-    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules,
+    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules +
+    ' When selectionOffset is supplied, it identifies the exact occurrence of selected in context (zero-based UTF-16 offset).',
     {selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
       const result = validateResult(value, action);
       if (action === 'explain' && result.headword === undefined) throw new Error('AI 未返回词头。');
@@ -102,6 +106,7 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
     sections.push(section);
     onProgress({...article, sections: [...sections]});
   }
+  if (article.selection && sections.length > 1) return;
   let overview = sections[0].summary;
   if (sections.length > 1) {
     await checkSource();
@@ -112,6 +117,34 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
     await checkSource();
   }
   onProgress({...article, sections, overview});
+}
+
+export async function translateArticlePart(article: ArticleSummary, part: ArticlePart, key: string, transport: Transport,
+  options?: ResultRequest): Promise<ParagraphTranslation[]> {
+  const text = article.source.slice(part.start, part.end);
+  const paragraphs = paragraphRanges(text).map(({start, end}) => ({
+    start: part.start + start, end: part.start + end,
+    source: article.selection && ('sidebar' in article.selection || article.selection.readOnly)
+      ? text.slice(start, end).trim() : proseText(text.slice(start, end)),
+  })).filter(paragraph => paragraph.source);
+  if (!paragraphs.length) throw new Error('此节没有可翻译的文字。');
+  const translations = await requestJson(key, transport,
+    'Translate the English paragraphs into Simplified Chinese using the other paragraphs for context. ' +
+    'Return a JSON object with a translations array, each item containing the original numeric id and its translation string. ' +
+    'Return exactly one full translation per id. Preserve paragraph boundaries, questions, speaker labels and qualifications.',
+    {paragraphs: paragraphs.map(({source}, id) => ({id, text: source}))}, value => {
+      const items = (value as {translations?: unknown[]})?.translations;
+      if (!Array.isArray(items) || items.length !== paragraphs.length) throw new Error('段落译文数量异常。');
+      const ids = new Set<number>();
+      const checked = items.map(item => {
+        const {id, translation} = item as {id: number; translation: string};
+        if (!Number.isInteger(id) || id < 0 || id >= paragraphs.length || ids.has(id)) throw new Error('译文无法对应原文。');
+        ids.add(id);
+        return {id, translation: validateResult({translation}, 'translate').translation};
+      });
+      return {translations: checked.sort((left, right) => left.id - right.id)};
+    }, options);
+  return paragraphs.map((paragraph, index) => ({...paragraph, translation: translations.translations[index].translation}));
 }
 
 /** Paragraph identities and original text come from the app, never the model. */

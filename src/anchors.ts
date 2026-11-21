@@ -2,13 +2,46 @@
 export const LEARNING_BOUNDARY = '\n\n<!-- note-digest:learning -->\n';
 export const LEARNING_HEADING = '## Note Digest 学习笔记';
 const learningSectionHeading = '\n\n' + LEARNING_HEADING;
+export const SUMMARY_CALLOUT = 'note-digest-summary';
+export const SUMMARY_START = '<!-- note-digest:summary -->';
+export const SUMMARY_END = '<!-- note-digest:summary-end -->';
+const summaryBlock = /^([ \t\r\n]*)<!-- note-digest:summary -->[ \t]*\r?\n\r?\n> \[!note-digest-summary\]\+ [^\r\n]+\r?\n(?:>[^\r\n]*\r?\n)+\r?\n<!-- note-digest:summary-end -->[ \t]*(?:\r?\n|$)/;
+
+export function frontmatterEnd(source: string): number {
+  return source.match(/^\uFEFF?---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/)?.[0].length ??
+    Number(source.startsWith('\uFEFF'));
+}
+
+export function savedSummaryRanges(source: string): {start: number; end: number}[] {
+  const ranges = [];
+  let cursor = frontmatterEnd(source);
+  for (let match = summaryBlock.exec(source.slice(cursor)); match; match = summaryBlock.exec(source.slice(cursor))) {
+    ranges.push({start: cursor + match[1].length, end: cursor + match[0].length});
+    cursor += match[0].length;
+  }
+  return ranges;
+}
+
+export function articleStart(source: string): number {
+  const prefix = savedSummaryRanges(source).at(-1)?.end ?? frontmatterEnd(source);
+  return prefix + (source.slice(prefix).match(/^(?:[ \t]*\r?\n)*/)?.[0].length ?? 0);
+}
+
+function maskSummaries(source: string): string {
+  const ranges = savedSummaryRanges(source);
+  if (!ranges.length) return source;
+  const {start} = ranges[0];
+  const {end} = ranges.at(-1)!;
+  return source.slice(0, start) + source.slice(start, end).replace(/[^\r\n]/g, ' ') + source.slice(end);
+}
+
 export function articleBody(source: string): string {
   const boundary = source.indexOf(LEARNING_BOUNDARY);
-  if (boundary < 0) return source.trimEnd();
+  if (boundary < 0) return maskSummaries(source.trimEnd());
   const headingStart = boundary - learningSectionHeading.length;
   // A marker below the heading stays inside that section when reordered in Outline.
   if (headingStart >= 0 && source.startsWith(learningSectionHeading, headingStart)) {
-    return source.slice(0, headingStart).trimEnd();
+    return maskSummaries(source.slice(0, headingStart).trimEnd());
   }
   const afterMarker = boundary + LEARNING_BOUNDARY.length;
   // Content can be inserted between the hidden marker and the generated heading in a rendered editor.
@@ -16,9 +49,9 @@ export function articleBody(source: string): string {
   const heading = /^## Note Digest 学习笔记[ \t]*\r?\n[ \t\r\n]*(?=<!-- note-digest:(?:group:(?:word|quote)|record:[\w-]+) -->)/m.exec(tail);
   if (heading && tail.slice(0, heading.index).trim()) {
     const hiddenMarker = LEARNING_BOUNDARY.replace(/[^\r\n]/g, ' ');
-    return (source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index)).trimEnd();
+    return maskSummaries((source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index)).trimEnd());
   }
-  return source.slice(0, boundary).trimEnd();
+  return maskSummaries(source.slice(0, boundary).trimEnd());
 }
 export function paragraphRanges(text: string): { start: number; end: number }[] {
   const ranges = [];

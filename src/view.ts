@@ -1,16 +1,16 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
-import type { ArticleSummary } from './article-summary';
+import { articleFinished, articlePartIsLocated, type ArticleSummary } from './article-summary';
 import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
-import { isLongSelection, resultMode, showAssessment } from './reading-layout';
+import { isLongSelection, resultMode, showAssessment, type ParagraphTranslation } from './reading-layout';
 import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
-  private selectionView?: {selection: DigestSelection; result?: DigestResult; mode: Action | 'idle'};
+  private selectionView?: DigestSelection;
   private claudianContexts = new WeakMap<HTMLElement, Omit<ClaudianExcerpt, 'text'>>();
   constructor(leaf: WorkspaceLeaf, private plugin: NoteDigestPlugin) { super(leaf); }
   getViewType(): string { return VIEW_TYPE; }
@@ -49,37 +49,26 @@ export class DigestView extends ItemView {
     }
     return selection.text;
   }
-  private summaryButton(parent: HTMLElement, text = '总结全文', previous?: ArticleSummary): void {
-    const button = parent.createEl('button', {text});
-    button.onclick = () => { void this.plugin.summarizeCurrentArticle(previous); };
-  }
-  private renderToolbar(el: HTMLElement, showingArticleSummary = false): void {
+  private renderToolbar(el: HTMLElement, mode?: Action | 'idle' | 'full'): void {
     const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
-    const selectionView = this.selectionView;
-    if (selectionView) {
-      const {selection, result, mode} = selectionView;
-      const choices: [string, Action][] = [['翻译','translate'],['语境解释','explain']];
-      if (isLongSelection(selection.text)) choices.unshift(['Summarize','summarize']);
-      for (const [label, action] of choices) {
-        const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(!showingArticleSummary && action === mode)}});
-        button.onclick = () => {
-          if (showingArticleSummary && action === mode && result) void this.plugin.run(selection, action, result);
-          else void this.plugin.run(selection, action);
-        };
-      }
-      if ('sidebar' in selection) return;
-    }
-    if (showingArticleSummary) {
-      actions.createEl('button', {text:'总结全文', attr:{'aria-pressed':'true'}});
-    } else {
-      this.summaryButton(actions);
+    const choices = [
+      ['Digest 全文', 'full', () => this.plugin.summarizeCurrentArticle()],
+      ['Digest 选中段落', 'summarize', () => this.plugin.summarizeSelection(this.selectionView)],
+      ['翻译', 'translate', () => this.plugin.runSelectionAction('translate', this.selectionView)],
+      ['语境解释', 'explain', () => this.plugin.runSelectionAction('explain', this.selectionView)],
+    ] as const;
+    for (const [label, action, run] of choices) {
+      const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(action === mode)}});
+      // Keep the text selection alive until the handler captures its current range.
+      button.onmousedown = event => event.preventDefault();
+      button.onclick = () => { void run(); };
     }
   }
   render(selection?: DigestSelection, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
-    this.selectionView = selection ? {selection, result, mode} : undefined;
+    this.selectionView = selection;
     const el = this.startRender();
     const revision = this.renderRevision;
-    this.renderToolbar(el);
+    this.renderToolbar(el, selection ? mode : undefined);
     if (!selection) {
       el.createEl('p', {text: '在文章或侧栏中选择英文，再点击 Digest 或按 D。'});
       const path = this.app.workspace.getActiveFile()?.path; if (path) this.renderCollection(path); return;
@@ -87,11 +76,12 @@ export class DigestView extends ItemView {
     const article = 'path' in selection ? selection : undefined;
     if (!article) el.createEl('p', {text: '侧栏 · 临时选区', cls:'note-digest-muted'});
     if (mode === 'idle') {
-      el.createEl('p', {text:'已选中长段落。请选择 Summarize、翻译或语境解释。',cls:'note-digest-muted'}); return;
+      el.createEl('p', {text:'已选中较长文字。请选择「Digest 选中段落」或「Digest 全文」。',cls:'note-digest-muted'}); return;
     }
     if (status) el.createEl('p',{text:status,cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
     if (!result) {
       if (!isLongSelection(selection.text)) el.createEl('p',{text:selection.text,cls:'note-digest-original'});
+      if (status && !status.startsWith('正在')) this.regenerateSelection(el, selection, mode, '重试');
       return;
     }
     if (mode === 'summarize') {
@@ -148,6 +138,7 @@ export class DigestView extends ItemView {
         }
       }
     }
+    this.regenerateSelection(el, selection, mode);
     if (article) {
       this.renderSave(article,result,mode);
       this.renderCollection(article.path);
@@ -180,32 +171,48 @@ export class DigestView extends ItemView {
       }
     };
   }
-  renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false): void {
-    const selection = this.selectionView?.selection;
-    if (selection && (!('path' in selection) || selection.path !== path)) this.selectionView = undefined;
+  private regenerateSelection(el: HTMLElement, selection: DigestSelection, mode: Action, text = '重新生成'): void {
+    if (mode === 'summarize') return;
+    const actions = el.createDiv({cls:'note-digest-actions'});
+    const button = actions.createEl('button', {text});
+    button.onclick = () => { void this.plugin.run(selection, mode, text === '重新生成'); };
+  }
+  renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false, requestedSelection?: DigestSelection): void {
+    const selection = article?.selection ?? requestedSelection;
+    if (selection) this.selectionView = selection;
+    else if (this.selectionView && (!('path' in this.selectionView) || this.selectionView.path !== path)) this.selectionView = undefined;
     const el = this.startRender();
-    this.renderToolbar(el, true);
-    const actions = el.createDiv({cls:'note-digest-actions', attr:{'aria-label':'全文摘要操作'}});
-    if (running) {
-      const stop = actions.createEl('button', {text:'停止摘要'});
-      stop.onclick = () => {
-        this.plugin.stopArticleSummary();
-        this.renderArticleSummary(path, article, '摘要已停止。');
-      };
-    } else {
-      if (article && !article.overview) this.summaryButton(actions, article.sections.length ? '继续摘要' : '重试摘要', article);
-      this.summaryButton(actions, article ? '重新总结全文' : '重试摘要');
-    }
-    const title = path.split('/').at(-1)?.replace(/\.md$/, '') ?? path;
+    this.renderToolbar(el, selection ? 'summarize' : 'full');
+    const title = path ? path.split('/').at(-1)!.replace(/\.md$/, '') : '侧栏选区';
     el.createEl('h3', {text:title, cls:'note-digest-original'});
     if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
+    const finished = article && articleFinished(article);
+    if (running || !finished) {
+      const actions = el.createDiv({cls:'note-digest-actions', attr:{'aria-label':'摘要进度'}});
+      if (running) {
+        const stop = actions.createEl('button', {text:'停止摘要'});
+        stop.onclick = () => {
+          this.plugin.stopArticleSummary();
+          this.renderArticleSummary(path, article, '摘要已停止。', false, selection);
+        };
+      } else {
+        const retry = actions.createEl('button', {text:article?.sections.length ? '继续摘要' : '重试摘要'});
+        retry.onclick = () => {
+          if (article) void this.plugin.retryDigest(article);
+          else if (selection) void this.plugin.summarizeSelection(selection);
+          else void this.plugin.summarizeCurrentArticle();
+        };
+      }
+    }
     if (article?.overview) {
-      el.createEl('h4', {text:'全文概览'});
+      el.createEl('h4', {text:selection ? '选区概览' : '全文概览'});
       const overview = el.createEl('p', {text:article.overview, cls:'note-digest-result'});
-      this.claudianContexts.set(overview, {title});
+      this.claudianContexts.set(overview, selection ? {title, source:selection.text} : {title});
+      if (path) this.renderOverviewSave(el, article);
+      if (article.parts.length === 1) this.renderSectionActions(el, article, 0);
     }
     if (article?.sections.length && article.parts.length > 1) {
-      const heading = article.overview ? '分节摘要' : `部分摘要 · 已完成 ${article.sections.length}/${article.parts.length} 节`;
+      const heading = finished ? '分节摘要' : `部分摘要 · 已完成 ${article.sections.length}/${article.parts.length} 节`;
       el.createEl('h4', {text:heading});
       article.sections.forEach((section, index) => {
         const row = el.createDiv({cls:'note-digest-paragraph'});
@@ -213,11 +220,64 @@ export class DigestView extends ItemView {
         const part = article.parts[index];
         const summary = row.createEl('p', {text:section.summary, cls:'note-digest-result'});
         this.claudianContexts.set(summary, {title:`${title} · ${section.title}`, source:article.source.slice(part.start, part.end).trim()});
-        const locate = row.createEl('button', {text:'定位原文'});
-        locate.onclick = () => { void this.plugin.revealArticlePart(article, part); };
+        this.renderSectionActions(row, article, index);
       });
     }
-    if (!running) this.renderCollection(path);
+    if (article && finished) {
+      const actions = el.createDiv({cls:'note-digest-actions'});
+      const regenerate = actions.createEl('button', {text:'重新生成'});
+      regenerate.onclick = () => { void this.plugin.retryDigest(article, true); };
+    }
+    if (path && !running) this.renderCollection(path);
+  }
+  private renderSectionActions(parent: HTMLElement, article: ArticleSummary, index: number): void {
+    const actions = parent.createDiv({cls:'note-digest-actions'});
+    if (articlePartIsLocated(article)) {
+      const locate = actions.createEl('button', {text:'定位原文'});
+      locate.onclick = () => { void this.plugin.revealArticlePart(article, article.parts[index]); };
+    }
+    const translate = actions.createEl('button', {text:'翻译本节'});
+    translate.onclick = () => { void this.plugin.translateSection(article, index, this.contentEl.scrollTop); };
+  }
+  renderSectionTranslation(article: ArticleSummary, index: number, scroll: number, paragraphs: ParagraphTranslation[],
+    status = '', running = false): void {
+    const el = this.startRender();
+    el.scrollTop = 0;
+      this.renderToolbar(el);
+    const actions = el.createDiv({cls:'note-digest-actions'});
+    const back = actions.createEl('button', {text:'返回摘要'});
+    back.onclick = () => { void this.plugin.returnToDigest(this, article, scroll); };
+    if (!running) {
+      const regenerate = actions.createEl('button', {text:paragraphs.length ? '重新生成' : '重试翻译'});
+      regenerate.onclick = () => { void this.plugin.translateSection(article, index, scroll, !!paragraphs.length); };
+    }
+    el.createEl('h3', {text:article.sections[index]?.title || '本节翻译'});
+    if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
+    for (const {source, translation} of paragraphs) {
+      const pair = el.createDiv({cls:'note-digest-paragraph'});
+      pair.createEl('p', {text:source, cls:'note-digest-original'});
+      pair.createEl('p', {text:translation, cls:'note-digest-result'});
+      this.claudianContexts.set(pair, {source});
+    }
+  }
+  private renderOverviewSave(el: HTMLElement, article: ArticleSummary): void {
+    const actions = el.createDiv({cls:'note-digest-actions'});
+    const button = actions.createEl('button', {text:'添加到文首'});
+    const revision = this.renderRevision;
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const saved = await this.plugin.saveOverview(article);
+        if (revision !== this.renderRevision) return;
+        if (saved.receipt && this.selectionView && 'path' in this.selectionView) {
+          this.selectionView = rebaseSelectionAfterInsertion(this.selectionView, saved.receipt) ?? this.selectionView;
+        }
+        this.renderArticleSummary(article.path, saved.article, saved.receipt ? '已添加到文首。' : '文首已有这份摘要。');
+      } catch (error) {
+        if (revision !== this.renderRevision) return;
+        this.renderArticleSummary(article.path, article, error instanceof Error ? error.message : '写入失败。');
+      }
+    };
   }
   private renderInsertButtons(parent: HTMLElement, selection: SelectionSnapshot, translation: string, revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
     let writes: HTMLElement | undefined;

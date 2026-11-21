@@ -23,7 +23,13 @@ function setup() {
   const module={exports:{} as any};
   new Function('require','module','exports',bundled.outputFiles[0].text)(()=>({ItemView}),module,module.exports);
   const plugin={collection:{recordsFor:()=>[],notePathFor:()=>undefined,matchingWords:async():Promise<any[]>=>[],updateExplanation:async(...args:any[])=>{calls.push(["update",...args]);return "已更新单词卡";}},run:async(...args:any[])=>calls.push(['run',...args]),collect:async(...args:any[])=>{calls.push(['collect',...args]);return {text:'已保存',duplicate:false};},removeNotes:async(...args:any[])=>{calls.push(['removeNotes',...args]);return '已删除';},insert:async(...args:any[])=>calls.push(['insert',...args]),
-    summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
+    summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),
+    summarizeSelection:(...args:any[])=>calls.push(['summarizeSelection',...args]),
+    retryDigest:(...args:any[])=>calls.push(['retry',...args]),
+    translateSection:(...args:any[])=>calls.push(['translateSection',...args]),
+    returnToDigest:(...args:any[])=>calls.push(['return',...args]),
+    saveOverview:async (article:any)=>{calls.push(['saveOverview',article]);return {article};},
+    runSelectionAction:(action:any,selection:any)=>calls.push(['run',selection,action]),stopArticleSummary:()=>calls.push(['stop']),revealArticlePart:(...args:any[])=>calls.push(['locate',...args])};
   return {view:new module.exports.DigestView({},plugin),document,calls,plugin};
 }
 const selected=snapshot('a.md','A compelling argument.','compelling');
@@ -127,7 +133,7 @@ test('Claudian excerpts pair a translation or section summary with its own sourc
 
 test('long selection stays blank until chosen action, then displays aligned bilingual paragraphs',()=>{
   const {view,document}=setup();const long=snapshot('a.md','First.\n\nSecond.','First.\n\nSecond.');
-  view.render(long,undefined,'','idle');assert.ok(!document.body.textContent!.includes('First.'));assert.ok(document.body.textContent!.includes('Summarize'));assert.equal(document.querySelector('.note-digest-save'),null);
+  view.render(long,undefined,'','idle');assert.ok(!document.body.textContent!.includes('First.'));assert.ok(document.body.textContent!.includes('Digest 选中段落'));assert.equal(document.querySelector('.note-digest-save'),null);
   view.render(long,{translation:'第一。\n\n第二。',paragraphs:[{source:'First.',start:0,end:6,translation:'第一。'},{source:'Second.',start:8,end:15,translation:'第二。'}]});
   const pairs=document.querySelectorAll('.note-digest-paragraph');assert.equal(pairs.length,2);assert.ok(pairs[0].textContent!.startsWith('First.第一。'));assert.ok(pairs[1].textContent!.startsWith('Second.第二。'));
   view.render(long,{translation:'',summary:'摘要内容'},'','summarize');assert.ok(document.body.textContent!.includes('摘要内容'));assert.equal(document.querySelector('.note-digest-save'),null);
@@ -138,7 +144,7 @@ test('full summary is reachable without selecting text and partial results offer
   const button = (text: string) => [...document.querySelectorAll('button')].find(button => button.textContent === text)!;
   view.render();
   assert.equal(calls.length, 0);
-  button('总结全文').click();
+  button('Digest 全文').click();
   const article = {...planArticleSummary('Clippings/Long Essay.md', '# First\nOne.\n# Second\nTwo.'), sections: [{title: '<img src=x>', summary: '第一节内容'}]};
   view.renderArticleSummary(article.path, article, '正在总结第 2/2 节…', true);
   assert.match(document.body.textContent!, /部分摘要 · 已完成 1\/2 节/);
@@ -147,33 +153,48 @@ test('full summary is reachable without selecting text and partial results offer
   button('定位原文').click();
   button('停止摘要').click();
   button('继续摘要').click();
-  assert.deepEqual(calls, [['summarize', undefined], ['locate', article, article.parts[0]], ['stop'], ['summarize', article]]);
+  assert.deepEqual(calls, [['summarize'], ['locate', article, article.parts[0]], ['stop'], ['retry', article]]);
 });
 
-test('article summary keeps selection actions visible and restores the previous result for the same selection', () => {
+test('full Digest comes first and the short actions capture live text with the remembered selection as fallback', () => {
   const {view, document, calls} = setup();
   const toolbarButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('.note-digest-toolbar button'));
   view.render(selected, explained);
-  toolbarButtons()[2].click();
-
-  view.renderArticleSummary(selected.path, undefined, '正在读取正文…', true);
-  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['翻译', '语境解释', '总结全文']);
-  assert.equal(toolbarButtons()[2].getAttribute('aria-pressed'), 'true');
   toolbarButtons()[0].click();
-  assert.deepEqual(calls.at(-1), ['run', selected, 'translate']);
-
-  const article = {...planArticleSummary(selected.path, selected.source), overview: '全文摘要结果'};
-  view.renderArticleSummary(selected.path, article);
-  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['翻译', '语境解释', '总结全文']);
+  view.renderArticleSummary(selected.path, undefined, '正在读取正文…', true);
+  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['Digest 全文', 'Digest 选中段落', '翻译', '语境解释']);
+  assert.equal(toolbarButtons()[0].getAttribute('aria-pressed'), 'true');
+  const down = new document.defaultView!.MouseEvent('mousedown', {bubbles:true, cancelable:true});
+  toolbarButtons()[3].dispatchEvent(down);
+  assert.ok(down.defaultPrevented);
+  toolbarButtons()[3].click();
+  assert.deepEqual(calls.at(-1), ['run', selected, 'explain']);
   toolbarButtons()[1].click();
-  assert.deepEqual(calls.at(-1), ['run', selected, 'explain', explained]);
+  assert.deepEqual(calls.at(-1), ['summarizeSelection', selected]);
+
+  view.renderArticleSummary('other.md', undefined, '正在读取正文…', true);
+  toolbarButtons()[2].click();
+  assert.deepEqual(calls.at(-1), ['run', undefined, 'translate']);
 });
 
-test('summary of another article does not offer actions for the previous article selection', () => {
-  const {view, document} = setup();
-  view.render(selected, explained);
-  view.renderArticleSummary('other.md', undefined, '正在读取正文…', true);
-  assert.deepEqual(Array.from(document.querySelectorAll('.note-digest-toolbar button'), button => button.textContent), ['总结全文']);
+test('section actions open a separate bilingual page and return to the original summary position', async () => {
+  const {view, document, calls} = setup();
+  const source = '# First\nOne.\n# Second\nTwo.';
+  const article = {...planArticleSummary('a.md', source), overview:'全文',
+    sections:[{title:'第一节',summary:'一'}, {title:'第二节',summary:'二'}]};
+  const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === text)!;
+  view.renderArticleSummary(article.path, article);
+  view.contentEl.scrollTop = 142;
+  button('翻译本节').click();
+  assert.deepEqual(calls.at(-1), ['translateSection', article, 0, 142]);
+  await button('添加到文首').onclick!(new (domEvent(document))('click') as any);
+  assert.deepEqual(calls.at(-1), ['saveOverview', article]);
+  view.renderSectionTranslation(article, 0, 142, [{source:'One.',translation:'一。',start:8,end:12}]);
+  assert.equal(document.querySelector('.note-digest-paragraph')?.textContent, 'One.一。');
+  button('重新生成').click();
+  assert.deepEqual(calls.at(-1), ['translateSection', article, 0, 142, true]);
+  button('返回摘要').click();
+  assert.deepEqual(calls.at(-1), ['return', view, article, 142]);
 });
 
 

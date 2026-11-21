@@ -19,6 +19,22 @@ export function markdownBody(source: string): Root {
   return fromMarkdown(body, tableExtensions);
 }
 
+/** Readable text from a local Markdown span, keeping labels and excluding media markup. */
+export function proseText(source: string): string {
+  function read(node: Nodes): string {
+    if (node.type === 'break') return '\n';
+    if (node.type === 'html') return '';
+    if (node.type === 'image' || node.type === 'imageReference') return node.alt ?? '';
+    if ('value' in node) return typeof node.value === 'string' ? node.value : '';
+    if ('children' in node) {
+      const separator = ['root', 'list', 'listItem', 'blockquote', 'table', 'tableRow'].includes(node.type) ? '\n' : '';
+      return node.children.map(read).filter(Boolean).join(separator);
+    }
+    return '';
+  }
+  return read(fromMarkdown(source, tableExtensions)).trim();
+}
+
 function range(node: Nodes): SourceRange {
   return {start: node.position!.start.offset!, end: node.position!.end.offset!};
 }
