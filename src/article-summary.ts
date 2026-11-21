@@ -1,14 +1,16 @@
 import { articleBody, articleStart, frontmatterEnd, paragraphRanges, readingProjection, savedSummaryRanges, SUMMARY_CALLOUT, SUMMARY_START, SUMMARY_END } from './anchors';
 import { escapeMarkdown, rebaseSelectionAfterInsertion, type DigestSelection, type InsertionReceipt } from './core';
 import { parseMarkdown, proseText } from './markdown-source';
+import type { RootContent } from 'mdast';
 
 const SECTION_TARGET = 1800;
 const SECTION_LENGTH = 6000;
-const MAX_SECTIONS = 40;
+export const MAX_SECTIONS = 40;
 
 export interface ArticlePart { start: number; end: number }
 export interface ArticleSupplement extends ArticlePart { label: string }
 export interface SectionSummary { title: string; summary: string }
+export interface DigestBatch { parts: ArticlePart[]; label?: string }
 export interface ArticleSummary {
   path: string;
   source: string;
@@ -17,18 +19,33 @@ export interface ArticleSummary {
   supplements?: ArticleSupplement[];
   sections: SectionSummary[];
   overview?: string;
+  batches?: DigestBatch[];
+  batch?: {index: number; total: number; label?: string};
 }
 
 export function planArticleSummary(path: string, source: string): ArticleSummary {
   const body = articleBody(source);
   const reading = readingProjection(source, articleStart(source), body.length, body);
-  const supplements = supplementalParts(reading.text);
-  const parts = planParts(reading.text.slice(0, supplements[0]?.start), 0);
+  const blocks = parseMarkdown(reading.text).children;
+  const supplements = supplementalParts(reading.text, blocks);
+  const text = reading.text.slice(0, supplements[0]?.start);
+  const mainBlocks = blocks.filter(node => node.position!.start.offset! < text.length);
+  const parts = planParts(text, mainBlocks);
   const locate = ({start, end}: ArticlePart) => ({
     start: reading.sourceOffset(start, 'start'), end: reading.sourceOffset(end, 'end'),
   });
-  return {path, source, parts: parts.map(locate), sections: [],
+  const located = parts.map(locate);
+  const batches = parts.length > MAX_SECTIONS ? planBatches(text, mainBlocks, parts, located) : undefined;
+  return {path, source, parts: located, sections: [], ...(batches && {batches}),
     ...(supplements.length && {supplements: supplements.map(part => ({...part, ...locate(part)}))})};
+}
+
+export function selectDigestBatch(plan: ArticleSummary, index: number): ArticleSummary {
+  const {batches, supplements, ...article} = plan;
+  const batch = batches?.[index];
+  if (!batches || !batch) throw new Error('分篇范围已变化，请重新打开 Digest 全文。');
+  return {...article, parts: batch.parts, sections: [], batch: {index, total:batches.length, label:batch.label},
+    ...(index === batches.length - 1 && supplements && {supplements})};
 }
 
 export function planSelectedSummary(selection: DigestSelection): ArticleSummary {
@@ -47,19 +64,19 @@ export function planSelectedSummary(selection: DigestSelection): ArticleSummary 
       if (selection.start < start || selection.end > end) throw new Error('请在英文正文中划选要摘要的文字。');
       const reading = readingProjection(selection.source, selection.start, selection.end);
       return {path: selection.path, source: selection.source, selection,
-        parts: planParts(reading.text, 0).map(part => ({
+        parts: boundedParts(reading.text).map(part => ({
           start: reading.sourceOffset(part.start, 'start'), end: reading.sourceOffset(part.end, 'end'),
         })), sections: []};
     }
-    return {path: selection.path, source: selection.text, selection, parts: planParts(selection.text, 0), sections: []};
+    return {path: selection.path, source: selection.text, selection, parts: boundedParts(selection.text), sections: []};
   }
-  return {path: '', source: selection.text, selection, parts: planParts(selection.text, 0), sections: []};
+  return {path: '', source: selection.text, selection, parts: boundedParts(selection.text), sections: []};
 }
 
 const supplementName = /^(?:notes|endnotes|footnotes|references|bibliography|sources|further reading|acknowledg(?:e)?ments|supplementary (?:material|information)|appendix(?: [A-Z0-9]+)?|podcasts?)\s*[:：]?$/i;
 
-function supplementalParts(body: string): ArticleSupplement[] {
-  const headings = parseMarkdown(body).children.flatMap(node => {
+function supplementalParts(body: string, blocks: RootContent[]): ArticleSupplement[] {
+  const headings = blocks.flatMap(node => {
     if (!node.position || (node.type !== 'heading' && node.type !== 'paragraph')) return [];
     const start = node.position.start.offset!;
     const raw = body.slice(start, node.position.end.offset);
@@ -76,18 +93,23 @@ function supplementalParts(body: string): ArticleSupplement[] {
   return tail.map(({start, label}, index) => ({start, label, end: tail[index + 1]?.start ?? body.length}));
 }
 
-function planParts(text: string, offset: number): ArticlePart[] {
+function boundedParts(text: string): ArticlePart[] {
+  const parts = planParts(text);
+  if (parts.length > MAX_SECTIONS) throw new Error(`所选范围超过 ${MAX_SECTIONS} 节，请缩短范围后再试。`);
+  return parts;
+}
+
+function planParts(text: string, blocks = parseMarkdown(text).children): ArticlePart[] {
   if (!text.trim()) throw new Error('没有可总结的正文。');
   const boundaries = new Set([0]);
   const explicit = new Set<number>();
   const blockStarts: number[] = [];
-  for (const node of parseMarkdown(text).children) {
+  for (const node of blocks) {
     if (!node.position) continue;
     const start = node.position.start.offset!;
     blockStarts.push(start);
-    const firstLine = text.slice(start, node.position.end.offset).split(/\r?\n/, 1)[0];
     const question = node.type === 'paragraph' &&
-      /^(?:\*\*|__)?[\p{L}][\p{L}\p{N} .&’'-]{0,30}: .+\?(?:\*\*|__)?\s*$/u.test(firstLine);
+      /^(?:\*\*|__)?[\p{L}][\p{L}\p{N} .&’'-]{0,30}: .+\?(?:\*\*|__)?\s*$/u.test(text.slice(start, node.position.end.offset).split(/\r?\n/, 1)[0]);
     if (node.type === 'heading' || question) {
       explicit.add(start);
       boundaries.add(start);
@@ -95,22 +117,24 @@ function planParts(text: string, offset: number): ArticlePart[] {
   }
   const starts = [...boundaries, text.length];
   const parts: ArticlePart[] = [];
+  let nextBreak = 0;
   for (let i = 1; i < starts.length; i++) {
     const start = starts[i - 1];
     const sectionEnd = starts[i];
     const target = explicit.has(start) ? SECTION_LENGTH : SECTION_TARGET;
-    const breaks = blockStarts.filter(point => point > start && point < sectionEnd);
-    let nextBreak = 0;
+    while (nextBreak < blockStarts.length && blockStarts[nextBreak] <= start) nextBreak++;
     let cursor = start;
     while (cursor < sectionEnd) {
       const limit = Math.min(cursor + SECTION_LENGTH, sectionEnd);
       const desired = Math.min(cursor + target, limit);
       let end = cursor;
-      while (nextBreak < breaks.length && breaks[nextBreak] <= desired) end = breaks[nextBreak++];
+      while (nextBreak < blockStarts.length && blockStarts[nextBreak] < sectionEnd && blockStarts[nextBreak] <= desired) {
+        end = blockStarts[nextBreak++];
+      }
       if (limit === sectionEnd && sectionEnd - desired < Math.min(440, target / 4)) end = limit;
       if (end === cursor) {
-        end = breaks[nextBreak] !== undefined && breaks[nextBreak] <= limit ? breaks[nextBreak] : limit;
-        if (end === breaks[nextBreak]) nextBreak++;
+        end = blockStarts[nextBreak] !== undefined && blockStarts[nextBreak] < sectionEnd && blockStarts[nextBreak] <= limit
+          ? blockStarts[nextBreak++] : limit;
         if (end < sectionEnd && end === limit) {
           const hardEnd = end;
           while (end > cursor + SECTION_LENGTH / 2 && !/\s/.test(text[end - 1])) end--;
@@ -119,13 +143,61 @@ function planParts(text: string, offset: number): ArticlePart[] {
         }
       }
       if (text.slice(cursor, end).trim()) {
-        if (parts.length === MAX_SECTIONS) throw new Error(`正文超过目前的 ${MAX_SECTIONS} 节摘要上限，请分篇后再试。`);
-        parts.push({start: offset + cursor, end: offset + end});
+        parts.push({start: cursor, end});
       }
       cursor = end;
     }
   }
   return parts;
+}
+
+function planBatches(text: string, blocks: RootContent[], parts: ArticlePart[], located: ArticlePart[]): DigestBatch[] {
+  const indices = new Map(parts.map((part, index) => [part.start, index]));
+  const headings = blocks.flatMap(node => {
+    if (node.type !== 'heading' || !node.position) return [];
+    const index = indices.get(node.position.start.offset!);
+    return index === undefined ? [] : [{index, depth:node.depth,
+      label:proseText(text.slice(node.position.start.offset, node.position.end.offset)).replace(/\s+/g, ' ').slice(0, 100)}];
+  });
+  const batches: {start:number; end:number}[] = [];
+  const append = (start: number, end: number) => {
+    const previous = batches.at(-1);
+    if (previous && end - previous.start <= MAX_SECTIONS) previous.end = end;
+    else batches.push({start, end});
+  };
+  // Keep complete chapters together. Only descend into subheadings of a chapter that exceeds the budget.
+  const split = (start: number, end: number, inside: typeof headings) => {
+    if (end - start <= MAX_SECTIONS) {
+      append(start, end);
+      return;
+    }
+    const boundaries = inside.filter(heading => heading.index > start && heading.index < end);
+    if (!boundaries.length) {
+      for (let cursor = start; cursor < end; cursor += MAX_SECTIONS) append(cursor, Math.min(cursor + MAX_SECTIONS, end));
+      return;
+    }
+    const depth = boundaries.reduce((shallowest, heading) => Math.min(shallowest, heading.depth), 6);
+    const cuts = [start, ...boundaries.filter(heading => heading.depth === depth).map(heading => heading.index), end];
+    let nextHeading = 0;
+    for (let i = 1; i < cuts.length; i++) {
+      const first = nextHeading;
+      while (nextHeading < boundaries.length && boundaries[nextHeading].index < cuts[i]) nextHeading++;
+      split(cuts[i - 1], cuts[i], boundaries.slice(first, nextHeading));
+    }
+  };
+  split(0, parts.length, headings);
+  let heading = 0;
+  let currentTitle: string | undefined;
+  const titleAt = (index: number) => {
+    while (heading < headings.length && headings[heading].index <= index) currentTitle = headings[heading++].label;
+    return currentTitle;
+  };
+  return batches.map(({start, end}) => {
+    const firstTitle = titleAt(start);
+    const lastTitle = titleAt(end - 1);
+    const label = firstTitle && lastTitle && firstTitle !== lastTitle ? `${firstTitle} — ${lastTitle}` : lastTitle;
+    return {parts:located.slice(start, end), label};
+  });
 }
 
 export function articleFinished(article: ArticleSummary): boolean {
@@ -177,7 +249,7 @@ export function articleTranslationParagraphs(article: ArticleSummary, part: Arti
 
 export function translationChunks(article: ArticleSummary, part: ArticlePart): ArticlePart[] {
   const reading = sectionSource(article, part);
-  return reading.text.length <= SECTION_LENGTH ? [part] : planParts(reading.text, 0).map(({start, end}) => ({
+  return reading.text.length <= SECTION_LENGTH ? [part] : boundedParts(reading.text).map(({start, end}) => ({
     start: reading.sourceOffset(start, 'start'), end: reading.sourceOffset(end, 'end'),
   }));
 }
@@ -186,7 +258,7 @@ export function overviewInsertion(current: string, article: ArticleSummary): Ins
   if (!article.path || current !== articleFileSource(article)) throw new Error('原文已修改，请重新打开 Digest。');
   if (!article.overview) throw new Error('没有可以添加到文首的概览。');
   const newline = current.match(/\r?\n/)?.[0] ?? '\n';
-  const title = article.selection ? '选段摘要' : '中文摘要';
+  const title = article.batch ? `第 ${article.batch.index + 1} 篇摘要` : article.selection ? '选段摘要' : '中文摘要';
   const content = escapeMarkdown(article.overview).replace(/[%$^:]/g, char => `&#${char.charCodeAt(0)};`);
   const block = [SUMMARY_START, '', `> [!${SUMMARY_CALLOUT}]+ ${title}`,
     ...content.split(/\r\n|\r|\n/).map(line => '> ' + line), '', SUMMARY_END].join(newline);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
 import {readingSnapshot,snapshot,type DigestResult} from '../src/core';
-import {planArticleSummary,sectionAt} from '../src/article-summary';
+import {planArticleSummary,sectionAt,selectDigestBatch} from '../src/article-summary';
 import {changeSectionTranslation} from '../src/section-translation';
 const bundled=await build({entryPoints:['src/view.ts'],bundle:true,write:false,format:'cjs',external:['obsidian'],platform:'node'});
 function setup() {
@@ -27,6 +27,7 @@ function setup() {
     summarizeCurrentArticle:(...args:any[])=>calls.push(['summarize',...args]),
     summarizeSelection:(...args:any[])=>calls.push(['summarizeSelection',...args]),
     retryDigest:(...args:any[])=>calls.push(['retry',...args]),
+    openDigestBatch:(...args:any[])=>calls.push(['openBatch',...args]),
     translateSection:(...args:any[])=>calls.push(['translateSection',...args]),
     returnToDigest:(...args:any[])=>calls.push(['return',...args]),
     saveOverview:async (article:any)=>{calls.push(['saveOverview',article]);return {article};},
@@ -223,6 +224,32 @@ test('bilingual page locates the section and switches between writing and one-cl
   assert.deepEqual(calls.at(-1), ['writeSectionTranslation', index, true]);
   assert.match(document.querySelector('[role="status"]')?.textContent ?? '', /已撤销本节译文/);
   assert.ok(button('将本节译文加入原文'));
+});
+
+test('oversized articles show a local plan and let the reader start and continue by batch', () => {
+  const {view, document, calls} = setup();
+  const source = Array.from({length:42}, (_, i) => `## Chapter ${i + 1}\n\nText.`).join('\n\n');
+  const article = planArticleSummary('Book.md', source);
+  const button = (label: string) => [...document.querySelectorAll('button')].find(el => el.textContent === label);
+  view.renderArticleBatchPlan(article);
+  assert.equal(calls.length, 0);
+  assert.match(document.body.textContent!, /正文共 42 节，已按原文顺序分为 2 篇/);
+  assert.match(document.querySelector('details')?.textContent ?? '', /Chapter 41 — Chapter 42/);
+  button('从第 1 篇开始')!.click();
+  assert.deepEqual(calls.at(-1), ['openBatch', article, 0]);
+  const first = {...selectDigestBatch(article, 0), overview:'本篇摘要'};
+  view.renderArticleSummary(article.path, first);
+  assert.match(document.body.textContent!, /第 1 \/ 2 篇/);
+  assert.equal(document.querySelector('h4')?.textContent, '本篇概览');
+  button('下一篇')!.click();
+  assert.deepEqual(calls.at(-1), ['openBatch', first, 1]);
+  const next = selectDigestBatch(article, 1);
+  view.renderArticleSummary(article.path, next, '已停止');
+  button('重试摘要')!.click();
+  assert.deepEqual(calls.at(-1), ['retry', next]);
+  button('上一篇')!.click();
+  assert.deepEqual(calls.at(-1), ['openBatch', next, 0]);
+  assert.equal(button('下一篇'), undefined);
 });
 
 

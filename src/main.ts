@@ -1,7 +1,7 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
 import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
-import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
+import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, selectDigestBatch, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection, type ParagraphTranslation } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
@@ -27,7 +27,7 @@ export default class NoteDigestPlugin extends Plugin {
   private generation = 0;
   private stopped = false;
   private quoteBusy = false;
-  private summaryJob?: { generation: number; path: string; selection?: DigestSelection; cancelled: boolean };
+  private summaryJob?: { generation: number; path: string; selection?: DigestSelection; batchIndex?: number; cancelled: boolean };
   private renderedSections = new WeakMap<HTMLElement, RenderedSection & {path: string}>();
   private selectionButton?: HTMLButtonElement;
   private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
@@ -264,20 +264,25 @@ export default class NoteDigestPlugin extends Plugin {
     catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
   }
   retryDigest(article?: ArticleSummary, regenerate = false): Promise<void> {
+    if (article?.batch) return this.openDigestBatch(article, article.batch.index, regenerate);
     return this.showDigest(article?.selection, regenerate);
   }
-  private async showDigest(selection?: DigestSelection, regenerate = false): Promise<void> {
+  openDigestBatch(article: ArticleSummary, index: number, regenerate = false): Promise<void> {
+    return this.showDigest(undefined, regenerate, {article, index});
+  }
+  private async showDigest(selection?: DigestSelection, regenerate = false, batch?: {article: ArticleSummary; index: number}): Promise<void> {
     const active = this.app.workspace.getActiveFile();
     const file = selection && 'sidebar' in selection ? null : active;
     if ((!selection || 'path' in selection) && (!file || file.extension !== 'md' ||
-        this.collection.isLearningNote(file.path) || (selection && selection.path !== file.path))) {
+        this.collection.isLearningNote(file.path) || (selection && selection.path !== file.path) ||
+        (batch && batch.article.path !== file.path))) {
       new Notice('请先打开要 Digest 的 Markdown 原文。');
       return;
     }
     const path = file?.path ?? '';
     if (this.summaryJob?.generation === this.generation && !this.summaryJob.cancelled &&
-        this.summaryJob.path === path && this.summaryJob.selection === selection) return;
-    const job = {generation: ++this.generation, path, selection, cancelled: false};
+        this.summaryJob.path === path && this.summaryJob.selection === selection && this.summaryJob.batchIndex === batch?.index) return;
+    const job = {generation: ++this.generation, path, selection, batchIndex:batch?.index, cancelled: false};
     this.summaryJob = job;
     const isCurrent = () => job.generation === this.generation && !this.stopped;
     let article: ArticleSummary | undefined;
@@ -292,11 +297,18 @@ export default class NoteDigestPlugin extends Plugin {
       checkActive();
       const source = file ? await this.storage.read(path) : null;
       checkActive();
-      if (file && (source === null || (selection && 'path' in selection && selection.source !== source))) {
+      if (file && (source === null || (selection && 'path' in selection && selection.source !== source) ||
+          (batch && batch.article.source !== source))) {
         stale = true;
         throw new Error('原文已修改，请重新选择或打开 Digest。');
       }
-      article = selection ? planSelectedSummary(selection) : planArticleSummary(path, source!);
+      const plan = batch?.article.batches ? batch.article : selection ? planSelectedSummary(selection) : planArticleSummary(path, source!);
+      if (plan.batches && !batch) {
+        panel.renderArticleBatchPlan(plan);
+        return;
+      }
+      article = batch ? selectDigestBatch(plan, batch.index) : plan;
+      if (batch) panel.contentEl.scrollTop = 0;
       const checkSource = async () => {
         checkActive();
         if (!file) return;
@@ -312,7 +324,8 @@ export default class NoteDigestPlugin extends Plugin {
         if (!article) return;
         const done = article.sections.length;
         const total = article.parts.length;
-        const status = done < total ? `正在总结第 ${done + 1}/${total} 节…` : '正在生成全文概览…';
+        const status = done < total ? `正在总结第 ${done + 1}/${total} 节…` :
+          article.batch ? '正在生成本篇概览…' : '正在生成全文概览…';
         panel!.renderArticleSummary(path, article, status, true);
       };
       const key = this.secretName ? this.app.secretStorage.getSecret(this.secretName) : null;

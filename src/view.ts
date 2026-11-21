@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
-import { articleFinished, articlePartIsLocated, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
+import { articleFinished, articlePartIsLocated, MAX_SECTIONS, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
 import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
@@ -178,6 +178,43 @@ export class DigestView extends ItemView {
     const button = actions.createEl('button', {text});
     button.onclick = () => { void this.plugin.run(selection, mode, text === '重新生成'); };
   }
+  renderArticleBatchPlan(article: ArticleSummary): void {
+    const batches = article.batches;
+    if (!batches?.length) return;
+    if (this.selectionView && (!('path' in this.selectionView) || this.selectionView.path !== article.path)) this.selectionView = undefined;
+    const el = this.startRender();
+    el.scrollTop = 0;
+    this.renderToolbar(el, 'full');
+    el.createEl('h3', {text:article.path.split('/').at(-1)!.replace(/\.md$/, '')});
+    el.createEl('p', {text:`正文共 ${article.parts.length} 节，已按原文顺序分为 ${batches.length} 篇。每篇最多处理 ${MAX_SECTIONS} 节。`});
+    const actions = el.createDiv({cls:'note-digest-actions'});
+    const first = actions.createEl('button', {text:'从第 1 篇开始', cls:'mod-cta'});
+    first.onclick = () => { void this.plugin.openDigestBatch(article, 0); };
+    const details = el.createEl('details');
+    details.createEl('summary', {text:'查看分篇范围'});
+    const list = details.createEl('ul');
+    batches.forEach(({parts, label}, index) => {
+      const row = list.createEl('li');
+      const caption = `第 ${index + 1} 篇${label ? ` · ${label}` : ''}（${parts.length} 节）`;
+      const open = row.createEl('button', {text:caption, cls:'note-digest-batch-choice'});
+      open.onclick = () => { void this.plugin.openDigestBatch(article, index); };
+    });
+  }
+  private renderBatchNavigation(el: HTMLElement, article: ArticleSummary): void {
+    const {batch} = article;
+    if (!batch) return;
+    const actions = el.createDiv({cls:'note-digest-actions', attr:{'aria-label':'分篇导航'}});
+    if (batch.index > 0) {
+      const previous = actions.createEl('button', {text:'上一篇'});
+      previous.onclick = () => { void this.plugin.openDigestBatch(article, batch.index - 1); };
+    }
+    if (batch.index + 1 < batch.total) {
+      const next = actions.createEl('button', {text:'下一篇'});
+      next.onclick = () => { void this.plugin.openDigestBatch(article, batch.index + 1); };
+    }
+    const ranges = actions.createEl('button', {text:'查看分篇'});
+    ranges.onclick = () => { void this.plugin.summarizeCurrentArticle(); };
+  }
   renderArticleSummary(path: string, article?: ArticleSummary, status = '', running = false, requestedSelection?: DigestSelection): void {
     const selection = article?.selection ?? requestedSelection;
     if (selection) this.selectionView = selection;
@@ -186,6 +223,11 @@ export class DigestView extends ItemView {
     this.renderToolbar(el, selection ? 'summarize' : 'full');
     const title = path ? path.split('/').at(-1)!.replace(/\.md$/, '') : '侧栏选区';
     el.createEl('h3', {text:title, cls:'note-digest-original'});
+    const batch = article?.batch;
+    if (article && batch) {
+      el.createEl('p', {text:`第 ${batch.index + 1} / ${batch.total} 篇${batch.label ? ` · ${batch.label}` : ''}`});
+      if (!running) this.renderBatchNavigation(el, article);
+    }
     if (status) el.createEl('p', {text:status, cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
     const finished = article && articleFinished(article);
     if (running || !finished) {
@@ -206,9 +248,10 @@ export class DigestView extends ItemView {
       }
     }
     if (article?.overview) {
-      el.createEl('h4', {text:selection ? '选区概览' : '全文概览'});
+      el.createEl('h4', {text:batch ? '本篇概览' : selection ? '选区概览' : '全文概览'});
       const overview = el.createEl('p', {text:article.overview, cls:'note-digest-result'});
-      this.claudianContexts.set(overview, selection ? {title, source:selection.text} : {title});
+      this.claudianContexts.set(overview, batch ? {title:`${title} · 第 ${batch.index + 1} 篇`} :
+        selection ? {title, source:selection.text} : {title});
       if (path) this.renderOverviewSave(el, article);
       if (article.parts.length === 1) this.renderSectionActions(el, article, 0);
     }
@@ -233,6 +276,7 @@ export class DigestView extends ItemView {
       });
     }
     if (article && finished) {
+      if (article.parts.length > 1) this.renderBatchNavigation(el, article);
       const actions = el.createDiv({cls:'note-digest-actions'});
       const regenerate = actions.createEl('button', {text:'重新生成'});
       regenerate.onclick = () => { void this.plugin.retryDigest(article, true); };

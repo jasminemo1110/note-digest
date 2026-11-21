@@ -1,5 +1,5 @@
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
-import { articleTranslationParagraphs, sectionSource, type ArticlePart, type ArticleSummary, type SectionSummary } from './article-summary';
+import { articleTranslationParagraphs, MAX_SECTIONS, sectionSource, type ArticlePart, type ArticleSummary, type SectionSummary } from './article-summary';
 import type { ResultRequest } from './result-cache';
 import type { ParagraphTranslation } from './reading-layout';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
@@ -93,6 +93,7 @@ function validateSection(value: unknown): SectionSummary {
 /** Only publish a new result after the caller confirms the source and operation are still current. */
 export async function summarizeArticle(article: ArticleSummary, key: string, transport: Transport,
   checkSource: () => Promise<void>, onProgress: (article: ArticleSummary) => void, options?: ResultRequest): Promise<void> {
+  if (article.parts.length > MAX_SECTIONS) throw new Error('请先选择要处理的一篇。');
   const sections = [...article.sections];
   while (sections.length < article.parts.length) {
     await checkSource();
@@ -108,8 +109,10 @@ export async function summarizeArticle(article: ArticleSummary, key: string, tra
   let overview = sections[0].summary;
   if (sections.length > 1) {
     await checkSource();
-    const result = await requestJson(key, transport,
-      'Synthesize the ordered section summaries of an article into a concise Simplified Chinese overview. Cover the main argument, how it develops, and its conclusion. Return a JSON object with a summary string.',
+    const prompt = article.batch
+      ? 'Synthesize these ordered section summaries from one part of a longer article into a concise Simplified Chinese overview. Cover only the provided part. Return a JSON object with a summary string.'
+      : 'Synthesize the ordered section summaries of an article into a concise Simplified Chinese overview. Cover the main argument, how it develops, and its conclusion. Return a JSON object with a summary string.';
+    const result = await requestJson(key, transport, prompt,
       {sections}, value => validateResult(value, 'summarize'), options);
     overview = result.summary!;
     await checkSource();

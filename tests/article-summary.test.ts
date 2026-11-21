@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { articleBody, LEARNING_BOUNDARY } from '../src/anchors';
-import { articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionSource, type ArticleSummary } from '../src/article-summary';
+import { articleFinished, MAX_SECTIONS, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionSource, selectDigestBatch, type ArticleSummary } from '../src/article-summary';
 import { readingSnapshot, snapshot } from '../src/core';
 import { summarizeArticle, translateArticlePart, type Transport } from '../src/provider';
 import { ResultCache } from '../src/result-cache';
@@ -189,4 +189,68 @@ test('named Markdown sections stay together up to the request limit', () => {
   const article = planArticleSummary('a.md', source);
   assert.equal(article.parts.length, 2);
   assert.equal(sectionSource(article, article.parts[0]).text.trim(), (heading + body).trim());
+});
+
+test('overflow keeps top-level chapters intact and labels ranges in source order', () => {
+  const chapter = (label: string, size: number) => `## ${label}\n\nIntroduction.\n\n` +
+    Array.from({length:size}, (_, i) => `### ${label} ${i + 1}\n\nA detail.`).join('\n\n');
+  const first = '# Book\n\nPreface.\n\n' + chapter('First chapter', 24);
+  const second = chapter('Second chapter', 23);
+  const body = first + '\n\n' + second + '\n\n';
+  const source = body + '## References\n\nA reference.';
+  const article = planArticleSummary('book.md', source);
+  assert.deepEqual(article.batches?.map(batch => batch.parts.length), [26,24]);
+  assert.deepEqual(article.batches?.flatMap(batch => batch.parts), article.parts);
+  assert.match(article.batches![0].label!, /^Book — First chapter/);
+  const later = selectDigestBatch(article, 1);
+  assert.match(sectionSource(later, later.parts[0]).text, /^## Second chapter/);
+  assert.deepEqual(later.supplements?.map(part => part.label), ['References']);
+  assert.equal(selectDigestBatch(article, 0).supplements, undefined);
+  const receipt = overviewInsertion(source, {...later, overview:'本篇内容'})!;
+  assert.match(receipt.after, /第 2 篇摘要/);
+  const updated = planArticleSummary(article.path, receipt.after);
+  assert.deepEqual(updated.batches?.map(batch => batch.parts.length), [26,24]);
+  assert.equal(updated.parts.map(part => sectionSource(updated, part).text).join(''), body);
+});
+
+test('oversized chapters split at their subheadings before falling back to paragraph limits', () => {
+  const paragraph = (label: string, index: number) => `Paragraph ${label} ${index}. ` + 'A full paragraph. '.repeat(225).trim();
+  const topic = (label: string, count: number) => `### ${label}\n\n` +
+    Array.from({length:count}, (_, i) => paragraph(label, i)).join('\n\n');
+  const subject = topic('Subject A', 25);
+  const source = '## Long chapter\n\n' + subject + '\n\n' + topic('Subject B', 23);
+  const article = planArticleSummary('long.md', source);
+  assert.equal(article.batches?.length, 2);
+  const later = selectDigestBatch(article, 1);
+  assert.match(sectionSource(later, later.parts[0]).text, /^### Subject B/);
+
+  const noHeading = Array.from({length:MAX_SECTIONS + 3}, (_, i) => paragraph('NoHeading', i)).join('\n\n');
+  const fallback = planArticleSummary('plain.md', noHeading);
+  assert.deepEqual(fallback.batches?.map(batch => batch.parts.length), [MAX_SECTIONS,3]);
+  assert.ok(fallback.parts.every(part => sectionSource(fallback, part).text.startsWith('Paragraph ') && part.end - part.start <= 6000));
+  assert.equal(fallback.parts.map(part => sectionSource(fallback, part).text).join(''), noHeading);
+  assert.equal(planArticleSummary('exact.md', noHeading.split('\n\n').slice(0, MAX_SECTIONS).join('\n\n')).batches, undefined);
+});
+
+test('only the selected batch reaches the provider and its overview describes that batch', async () => {
+  const source = Array.from({length:MAX_SECTIONS + 2}, (_, i) => `## Topic ${i + 1}\n\nDetails ${i + 1}.`).join('\n\n');
+  const article = planArticleSummary('long.md', source);
+  const inputs: {section?: string}[] = [];
+  const transport: Transport = async request => {
+    const messages = JSON.parse(request.body as string).messages;
+    const input = JSON.parse(messages[1].content);
+    inputs.push(input);
+    if (!input.section) assert.match(messages[0].content, /Cover only the provided part/);
+    const output = input.section ? {title:'小节',summary:'内容'} : {summary:'本篇概览'};
+    return {status:200, json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(output)}}]}};
+  };
+  await assert.rejects(summarizeArticle(article, 'test', transport, async () => {}, () => {}), /先选择/);
+  assert.equal(inputs.length, 0);
+  assert.throws(() => selectDigestBatch(article, 2), /范围已变化/);
+  const second = selectDigestBatch(article, 1);
+  let latest = second;
+  await summarizeArticle(second, 'test', transport, async () => {}, update => { latest = update; });
+  assert.equal(inputs.length, 3);
+  assert.deepEqual(inputs.slice(0,2).map(input => input.section?.split('\n')[0]), ['## Topic 41','## Topic 42']);
+  assert.equal(latest.overview, '本篇概览');
 });
