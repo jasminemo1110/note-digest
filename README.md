@@ -124,12 +124,12 @@ Note Digest 可以独立使用，也可以与其他插件配合，把阅读时�
 
 启用 Claudian 后，在 Note Digest 侧栏划选一段译文、语境解释或摘要，点击 **问 Claudian**。所选内容和对应原文会追加到 Claudian 当前对话的输入框。划选全文概览时，草稿会附上文章标题。你可以在「我的追问」下补写问题，再手动发送。
 
-### Claudian · 把聊天问答留在原句旁
+### Claudian · 把聊天问答存为批注
 
-一边读文章一边在 Claudian 提问时，可以把值得回看的解释直接留在原句下面。这项联动需要同时启用 Note Digest 和兼容的 Claudian，并打开 Claudian 的主聊天面板。已在 Claudian **2.3.43** 验证。[Claudian 项目](https://github.com/YishenTu/claudian)
+一边读文章一边在 Claudian 提问时，可以把值得回看的解释直接留在相关段落旁。这项联动需要同时启用 Note Digest 和兼容的 Claudian，并打开 Claudian 的主聊天面板。已在 Claudian **2.3.43** 验证。[Claudian 项目](https://github.com/YishenTu/claudian)
 
 1. 在 Markdown 文章的普通正文段落里选中原句，或在编辑模式（含实时预览）把光标放在正文段落或段间空行。
-2. 把鼠标移到想保存的已完成回复上，点 **将问答存为原句批注** 或 **仅答案存为原句批注**。
+2. 把鼠标移到想保存的已完成回复上，点 **将问答存为批注** 或 **仅答案存为批注**。
 3. Note Digest 会在选区或光标所在的段落下插入默认折叠的批注。光标在段间空行时，批注插在那两段之间。标题根据保存的内容生成，例如「单词问答：potential」。点击标题即可展开。
 
 保存与起标题都在本地完成，直接使用已经生成的回复，无需为此配置 DeepSeek 密钥。只装 Note Digest 也可以正常翻译、解释、摘要和收藏。

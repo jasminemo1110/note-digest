@@ -6,8 +6,8 @@ export const CLAUDIAN_VIEW = 'claudian-view';
 const saveButtonClass = 'note-digest-save-claudian';
 const responseSelector = '.claudian-message[data-role="assistant"][data-message-id]';
 const saveActions = [
-  ['exchange', '将问答存为原句批注'],
-  ['answer', '仅答案存为原句批注'],
+  ['exchange', '将问答存为批注'],
+  ['answer', '仅答案存为批注'],
 ] as const;
 export type ClaudianSaveMode = typeof saveActions[number][0];
 

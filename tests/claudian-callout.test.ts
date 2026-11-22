@@ -128,7 +128,7 @@ test('both buttons save content from the clicked historical reply, and only the 
   row.firstElementChild!.append(copy);
   await new Promise<void>(resolve => queueMicrotask(resolve));
   const buttons = Array.from(row.querySelectorAll<HTMLButtonElement>(selector));
-  assert.deepEqual(buttons.map(button => button.textContent), ['将问答存为原句批注', '仅答案存为原句批注']);
+  assert.deepEqual(buttons.map(button => button.textContent), ['将问答存为批注', '仅答案存为批注']);
   buttons.forEach(button => button.click());
   assert.deepEqual(saved, [exchange, {answer: exchange.answer}]);
   assert.equal(readClaudianNote({getActiveTab: () => ({dom: {messagesEl: messagesEl.cloneNode()}})}, row, 'answer'), undefined);
