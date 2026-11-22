@@ -1,0 +1,36 @@
+filters:
+  and:
+    - file.inFolder("Digest/单词学习")
+    - file.ext == "md"
+    - note.digest_has_cards == true
+formulas:
+  word: file.asLink(note.digest_word)
+  pos: if(note.digest_pos, html(list(note.digest_pos).map(escapeHTML(value)).join("<br>")), "")
+  ipa: if(note.digest_ipa, html(list(note.digest_ipa).map(escapeHTML(value)).join("<br>")), "")
+  meaning: if(note.digest_meaning, html(list(note.digest_meaning).map(escapeHTML(value)).join("<br>")), "")
+properties:
+  formula.word:
+    displayName: 单词
+  formula.pos:
+    displayName: 词性
+  formula.ipa:
+    displayName: 音标
+  formula.meaning:
+    displayName: 常用义
+views:
+  - type: table
+    name: 全部单词
+    order:
+      - formula.word
+      - formula.pos
+      - formula.ipa
+      - formula.meaning
+    sort:
+      - property: digest_word
+        direction: ASC
+    rowHeight: tall
+    columnSize:
+      formula.word: 130
+      formula.pos: 125
+      formula.ipa: 200
+      formula.meaning: 225

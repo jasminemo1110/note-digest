@@ -3,6 +3,7 @@ import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
 import { articleBody, digestText, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
+import { addWordVocabulary, markWordNoteCards, wordNoteBody } from './word-vocabulary';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
@@ -127,6 +128,9 @@ function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
 }
 function wordNoteHeader(word: WordNote): string { return `<!-- note-digest:word-note:${word.id} -->`; }
+function ownedWordNote(content: string, word: WordNote): boolean {
+  return wordNoteBody(content).startsWith(wordNoteHeader(word) + '\n');
+}
 function wordTitle(headword: string): string {
   const title = headword.normalize('NFKC').trim().replace(/\s+/g, ' ');
   return title.replace(/^[\s.,!?;:()“”]+|[\s.,!?;:()“”]+$/g, '') || title;
@@ -146,7 +150,7 @@ function addWordSource(current: string, doc: SourceDocument): string {
   return current.slice(start, end).includes(marker) ? current : current.slice(0, end) + wordSourceLine(doc) + current.slice(end);
 }
 function ownedIndependentNote(current: string, path: string, record: LearningRecord, doc: SourceDocument): boolean {
-  return path === record.wordNote?.path ? current.startsWith(wordNoteHeader(record.wordNote) + '\n') :
+  return path === record.wordNote?.path ? ownedWordNote(current, record.wordNote) :
     path === doc.notePath && current.includes(`<!-- note-digest:document:${doc.id} -->`);
 }
 function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): string {
@@ -219,7 +223,7 @@ function savedCardRange(current: string, record: LearningRecord, doc: SourceDocu
   if (current.indexOf(marker, start + marker.length) >= 0) throw new Error('记录标记重复，无法安全确定要删除的卡片。');
   const boundary = current.indexOf(LEARNING_BOUNDARY);
   const ownedNote = current.includes(`<!-- note-digest:document:${doc.id} -->`) ||
-    (record.wordNote && current.startsWith(wordNoteHeader(record.wordNote) + '\n'));
+    (record.wordNote && ownedWordNote(current, record.wordNote));
   if (!ownedNote && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length)) throw new Error('卡片不在可确认的学习笔记区域，已保留原文。');
   const end = current.indexOf(endMarker);
   if (end >= 0) {
@@ -259,7 +263,7 @@ function updateCard(current: string, record: LearningRecord, doc: SourceDocument
   const end = current.indexOf(endMarker);
   const boundary = current.indexOf(LEARNING_BOUNDARY);
   const owned = current.includes(`<!-- note-digest:document:${doc.id} -->`) ||
-    (record.wordNote && current.startsWith(wordNoteHeader(record.wordNote) + '\n'));
+    (record.wordNote && ownedWordNote(current, record.wordNote));
   if (start < 0 || (!owned && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length))) {
     throw new Error('找不到对应学习卡片。');
   }
@@ -342,14 +346,15 @@ function appendGroupedCard(current: string, kind: Kind, card: string): string {
   if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
   return current.slice(0, endIndex) + card + '\n' + current.slice(endIndex);
 }
-function prepareWordNote(current: string | null, word: WordNote, title: string): string {
+function prepareWordNote(current: string | null, word: WordNote, title: string, result?: DigestResult): string {
   const heading = escapeMarkdown(Array.from(title).slice(0, 120).join('')).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
   const base = current ?? `${wordNoteHeader(word)}\n# ${heading}\n\n${WORD_SOURCES_START}\n\n${WORD_SOURCES_END}\n`;
-  if (!base.startsWith(wordNoteHeader(word) + '\n')) throw new Error('目标笔记已有其他内容，已保留该文件。');
-  return base;
+  if (!ownedWordNote(base, word)) throw new Error('目标笔记已有其他内容，已保留该文件。');
+  return markWordNoteCards(addWordVocabulary(base, title, result?.dictionarySenses, result?.pronunciation), true);
 }
 function prepareArticleWordNote(current: string | null, record: LearningRecord, doc: SourceDocument): string {
-  return addWordSource(prepareWordNote(current, record.wordNote!, wordTitle(explanationHeadword(record.anchor.text, record.result))), doc);
+  const title = wordTitle(explanationHeadword(record.anchor.text, record.result));
+  return addWordSource(prepareWordNote(current, record.wordNote!, title, record.result), doc);
 }
 /** Explicit migration moves only byte-identical generated cards into typed groups. */
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
@@ -408,7 +413,7 @@ export class CollectionStore {
     const fileName = name === key && !reserved ? name : `${name.replaceAll('.', '-')}--${id.slice(0, 16)}`;
     return known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
   }
-  private async writeSidebarCard(id: string, title: string, card: string, verifyOriginal = false): Promise<{path: string; duplicate: boolean}> {
+  private async writeSidebarCard(id: string, title: string, card: string, result?: DigestResult): Promise<{path: string; duplicate: boolean}> {
     const next = structuredClone(this.data);
     const existing = next.sidebarWords?.find(entry => entry.id === id);
     const note = existing?.note ?? await this.findWordNote(next, title);
@@ -419,10 +424,10 @@ export class CollectionStore {
     const marker = `<!-- note-digest:record:${id} -->`;
     let duplicate = false;
     await this.port.update(note.path, current => {
-      const base = prepareWordNote(current, note, title);
+      const base = prepareWordNote(current, note, title, result);
       duplicate = base.includes(marker);
       if (!duplicate) return appendGroupedCard(base, 'word', '\n\n' + card);
-      if (verifyOriginal && (!base.includes(card) || base.indexOf(marker) !== base.lastIndexOf(marker))) {
+      if (!result && (!base.includes(card) || base.indexOf(marker) !== base.lastIndexOf(marker))) {
         throw new Error('新笔记中已有不同版本的卡片，已保留旧笔记。');
       }
       return base;
@@ -437,7 +442,7 @@ export class CollectionStore {
       const id = await digestText(key);
       const title = wordTitle(explanationHeadword(anchor.text, result));
       const card = markedCardMarkdown({id, kind:'word', anchor, result}, anchor.block).trimStart();
-      const saved = await this.writeSidebarCard(id, title, card);
+      const saved = await this.writeSidebarCard(id, title, card, result);
       return {...saved, text:saved.duplicate ? '本词已收藏' : '已收藏到单词笔记'};
     });
   }
@@ -459,7 +464,7 @@ export class CollectionStore {
       for (const [card, id, headword] of cards) {
         const title = wordTitle(headword.replace(/\\([!-/:-@\[-`{-~])/g, '$1'));
         if (!title) throw new Error('旧侧栏卡片缺少可用词头，已保留旧笔记。');
-        const saved = await this.writeSidebarCard(id, title, card.endsWith('\n') ? card : card + '\n', true);
+        const saved = await this.writeSidebarCard(id, title, card.endsWith('\n') ? card : card + '\n');
         paths.push(saved.path);
       }
       const group = groupTokens('word');
@@ -509,6 +514,7 @@ export class CollectionStore {
       const result = removeSavedRecord(current, record, doc, unchanged);
       removed = result.removed;
       if (removed && path === record.wordNote?.path && ownedIndependentNote(current, path, record, doc)) {
+        const hasCards = /^<!-- note-digest:record:[a-zA-Z0-9-]+ -->\r?$/m.test(result.text);
         const sameSource = this.data.records.some(other => other.id !== record.id && other.documentId === doc.id &&
           result.text.includes(`<!-- note-digest:record:${other.id} -->`));
         const link = wordSourceLine(doc);
@@ -516,8 +522,9 @@ export class CollectionStore {
         const end = result.text.indexOf(WORD_SOURCES_END);
         const offset = result.text.indexOf(link, start);
         if (!sameSource && start >= 0 && offset > start && offset + link.length <= end) {
-          return result.text.slice(0, offset) + result.text.slice(offset + link.length);
+          return markWordNoteCards(result.text.slice(0, offset) + result.text.slice(offset + link.length), hasCards);
         }
+        return markWordNoteCards(result.text, hasCards);
       }
       return result.text;
     });

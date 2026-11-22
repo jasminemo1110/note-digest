@@ -22,17 +22,20 @@ export interface ExpressionAssessment {
 }
 export const MAX_COMMON_USAGES = 3;
 export const MAX_WORD_FAMILY = 4;
+export const MAX_DICTIONARY_SENSES = 4;
 export interface CommonUsage {
   partOfSpeech: string;
   meaning: string;
   example: string;
 }
 export interface WordFamilyEntry { word: string; partOfSpeech: string; meaning: string }
+export interface DictionarySense { partOfSpeech: string; meaning: string; pronunciation: string | null }
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
   headword?: string | null;
   commonUsages?: CommonUsage[];
   wordFamily?: WordFamilyEntry[];
+  dictionarySenses?: DictionarySense[];
   pronunciation?: string | null; assessment?: ExpressionAssessment;
   wordPronunciation?: {uk: string; us: string} | null;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
@@ -135,6 +138,19 @@ export function validateResult(value: unknown, action: Action): DigestResult {
         if (!seen.has(key) && validated.headword !== null) validated.wordFamily.push({word, partOfSpeech, meaning});
         seen.add(key);
       }
+    }
+    if (input.dictionarySenses !== undefined) {
+      if (!Array.isArray(input.dictionarySenses) || input.dictionarySenses.length > MAX_DICTIONARY_SENSES) {
+        throw new Error('AI 词汇表常用义列表异常。');
+      }
+      const senses = input.dictionarySenses.map(entry => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('AI 词汇表字段异常。');
+        const pronunciation = entry.pronunciation === null ? null : validateUsageText(entry.pronunciation, 140, '词汇表音标');
+        if (pronunciation && !/\/[^/\s][^/]*\//.test(pronunciation)) throw new Error('AI 词汇表音标字段异常。');
+        return {partOfSpeech:validateUsageText(entry.partOfSpeech, 24, '词汇表词性'),
+          meaning:validateUsageText(entry.meaning, 90, '词汇表常用义'), pronunciation};
+      });
+      validated.dictionarySenses = validated.headword === null ? [] : senses;
     }
     const pronunciation = input.pronunciation;
     if (pronunciation !== null && (typeof pronunciation !== 'string' || !pronunciation.trim() || pronunciation.length > 500)) throw new Error('AI 音标字段异常。');

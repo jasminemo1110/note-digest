@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { collectionFeedback, CollectionStore, loadCollection, recordMarkdown, SIDEBAR_NOTE_PATH, type CollectionData, type StoragePort } from '../src/collection';
 import { readingSnapshot, snapshot, type DigestResult } from '../src/core';
 import { articleBody, locateAnchor, LEARNING_BOUNDARY, LEARNING_HEADING } from '../src/anchors';
+import { addWordVocabulary, wordNoteBody } from '../src/word-vocabulary';
 const source = '# Article\n\nA compelling argument.\n\nA compelling story.';
 const path = 'Articles/Learning.md';
 const result: DigestResult = { translation:'有说服力的', pronunciation:'/kəmˈpelɪŋ/', meaning:'形容论点令人信服', usage:'a compelling argument\n另一个搭配', example:'It is compelling. 它令人信服。', assessment:{status:'natural', explanation:'搭配自然', correction:null} };
@@ -236,6 +237,40 @@ test('article and sidebar saves reuse a renamed sidebar-only word note', async (
   assert.ok(restarted.isLearningNote(renamed));
   assert.equal((await restarted.save(select(),result,'word','note')).targets[0].path,renamed);
   assert.equal((await restarted.saveSidebarWord(sidebarWord('A compelling example.'), result)).path,renamed);
+});
+
+test('both save paths set vocabulary properties and keep them through append and undo', async () => {
+  const f=fixture();
+  const lexical = {...result, dictionarySenses:[{partOfSpeech:'形容词',meaning:'有说服力的',pronunciation:'/kəmˈpelɪŋ/'}],
+    wordFamily:[{word:'compel',partOfSpeech:'动词',meaning:'迫使'}]};
+  const first = await f.store.save(select(),lexical,'word','note');
+  const wordPath = first.targets[0].path;
+  const saved = f.files.get(wordPath)!;
+  assert.match(saved, /^---\ndigest_word: "compelling"\ndigest_pos: \["形容词"\]\ndigest_ipa: \["\/kəmˈpelɪŋ\/"\]\ndigest_meaning: \["有说服力的"\]/);
+  assert.match(wordNoteBody(saved), /\*\*同族词\*\*\n\n- \*\*compel\*\* · 动词 · 迫使/);
+  assert.ok((await f.store.undoSave(first.undo!))?.complete);
+  assert.match(f.files.get(wordPath)!, /digest_has_cards: false/);
+  assert.doesNotMatch(f.files.get(wordPath)!, /<!-- note-digest:record:/);
+  const sidebar = await f.store.saveSidebarWord(sidebarWord('A compelling example.'), {...lexical, dictionarySenses:[]});
+  assert.equal(sidebar.path,wordPath);
+  assert.match(f.files.get(wordPath)!, /digest_has_cards: true/);
+  assert.match(f.files.get(wordPath)!, /digest_meaning: \["有说服力的"\]/);
+  const newSidebar = await f.store.saveSidebarWord({sidebar:true,text:'issue',context:'An important issue.',contextOffset:13}, {...lexical,
+    headword:'issue',dictionarySenses:[{partOfSpeech:'名词',meaning:'问题',pronunciation:'/ˈɪʃuː/'},{partOfSpeech:'动词',meaning:'发布',pronunciation:'/ˈɪʃuː/'}]});
+  assert.match(f.files.get(newSidebar.path)!, /digest_meaning: \["名词 · 问题","动词 · 发布"\]/);
+});
+
+test('indexing existing notes changes only properties and distinguishes common homographs', () => {
+  const body = '<!-- note-digest:word-note:example -->\r\n# lead\r\n\r\nExisting card.\r\n';
+  const existing = '---\r\ntags: [words]\r\ndigest_pos: ["我自己的词性"]\r\n---\r\n' + body;
+  const senses = [{partOfSpeech:'动词',meaning:'带领',pronunciation:'/liːd/'},
+    {partOfSpeech:'名词',meaning:'领先',pronunciation:'/liːd/'}, {partOfSpeech:'名词',meaning:'铅',pronunciation:'/led/'}];
+  const indexed = addWordVocabulary(existing,'lead',senses);
+  assert.equal(wordNoteBody(indexed),body);
+  assert.match(indexed,/digest_ipa: \["动词 · \/liːd\/","名词 · \/liːd\/","名词 · \/led\/"\]\r\n/);
+  assert.match(indexed,/"名词（\/led\/） · 铅"/);
+  assert.match(indexed,/tags: \[words\]\r\ndigest_pos: \["我自己的词性"\]/);
+  assert.equal(addWordVocabulary(indexed,'lead',senses),indexed);
 });
 
 test('both targets retain full explanation, source body and saved identity', async () => {

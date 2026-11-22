@@ -16,6 +16,7 @@
 - src/result-cache.ts：经过校验的 AI 结果复用，内存去重与可选的有界本机缓存。
 - src/settings.ts：非敏感设置与 SecretStorage 选择界面。
 - src/collection.ts：版本化收藏数据、同语境去重、串行事务、逐目标幂等追加；视图不得自行覆盖文件。
+- src/word-vocabulary.ts：独立词汇笔记的 Bases 属性和卡片存在状态，保留正文及手工属性。
 - src/vault-storage.ts：Vault.process、独占创建、未同步编辑保护。
 - src/anchors.ts：排除生成学习区与段落锚点。
 - src/markdown-source.ts：Markdown 结构、阅读选区映射和插入位置。
