@@ -6,11 +6,29 @@ Note Digest 是一款独立的 Obsidian 桌面插件。打开仓库里的英文 
 
 ## 安装
 
-需要 **Obsidian 桌面版 1.11.5 或更新版本**。上架 Obsidian 社区插件目录前，可通过 GitHub Release 手动安装。
+需要 **Obsidian 桌面版 1.11.5 或更新版本**。
 
-### 从 GitHub Release 下载安装
+### 让 AI Agent 帮你安装
 
-1. 打开 [GitHub Releases](https://github.com/jasminemo1110/note-digest/releases)，从同一个版本的 **Assets** 下载 `main.js`、`manifest.json` 和 `styles.css`。
+把下面这段话交给能操作本地文件的 AI Agent（例如 Codex 或 Claude Code），让它下载并安装插件。
+
+```text
+请帮我安装这个 Obsidian 插件：
+https://github.com/jasminemo1110/note-digest
+
+先询问我要安装到哪个 Obsidian 仓库，并确认它的本地路径。
+打开 GitHub Releases 列表，选择最新正式版。若只有预发行版（Pre-release），选择最新预发行版。
+从同一个版本的 Assets 下载 main.js、manifest.json 和 styles.css。
+如果使用 GitHub CLI 下载，请明确指定版本标签。
+检查 manifest.json 的版本，将三个文件复制到该仓库的
+.obsidian/plugins/note-digest/ 目录，并告诉我如何在 Obsidian 中启用插件。
+如果已有旧版，只更新这三个文件，保留 data.json、现有笔记和其他设置。
+不要读取、索取或修改 API Key；密钥由我自己在 Obsidian 界面配置。
+```
+
+### 从 GitHub Releases 下载安装
+
+1. 打开 [GitHub Releases](https://github.com/jasminemo1110/note-digest/releases)，选中要安装的版本，从其 **Assets** 下载 `main.js`、`manifest.json` 和 `styles.css`。
 2. 在目标 Obsidian 仓库中创建 `.obsidian/plugins/note-digest/`，把三个文件放进去。`.obsidian` 是隐藏目录。
 3. 在 Obsidian 的 **设置 → 第三方插件 / 社区插件** 中允许使用社区插件，找到并启用 **Note Digest**。如果列表未刷新，重启 Obsidian。
 4. 要使用翻译、语境解释或摘要，请按下方步骤[配置 DeepSeek API Key](#配置-deepseek-api-key)。
@@ -30,22 +48,6 @@ npm run build
 ```
 
 构建通过后，把项目根目录的 `main.js`、`manifest.json` 和 `styles.css` 放进目标仓库的 `.obsidian/plugins/note-digest/`，然后按上面的步骤启用插件。
-
-### 让 AI Agent 帮你安装
-
-可以把仓库链接和下面这段话交给能够操作本地文件、运行终端的 AI Agent，例如 Codex 或 Claude Code：
-
-```text
-请帮我安装这个 Obsidian 插件：
-https://github.com/jasminemo1110/note-digest
-
-先询问我要安装到哪个 Obsidian 仓库，并确认它的本地路径。
-从同一个 GitHub Release 的 Assets 下载 main.js、manifest.json 和 styles.css，
-检查 manifest.json 的版本，然后把三个文件复制到该仓库的
-.obsidian/plugins/note-digest/ 目录，然后告诉我如何在 Obsidian 中启用插件。
-如果已有旧版，只更新这三个文件，保留 data.json、现有笔记和其他设置。
-不要读取、索取或修改 API Key；密钥由我自己在 Obsidian 界面配置。
-```
 
 ## 配置 DeepSeek API Key
 
