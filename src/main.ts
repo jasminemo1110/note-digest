@@ -12,7 +12,7 @@ import { articleBody, locateAnchor, SECTION_TRANSLATION_CALLOUT, SUMMARY_CALLOUT
 import type { DigestResult } from './core';
 import { articleRange, isSelectionControl, readingShortcut, sidebarSelection } from './reading-actions';
 import type { RenderedSection, TableCellPosition } from './markdown-source';
-import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianSaveMode } from './claudian-callout';
+import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, type ClaudianCalloutPosition, type ClaudianSaveMode } from './claudian-callout';
 import { appendClaudianDraft, getClaudian } from './claudian-draft';
 import { ResultCache } from './result-cache';
 import { changeSectionTranslation } from './section-translation';
@@ -30,7 +30,7 @@ export default class NoteDigestPlugin extends Plugin {
   private summaryJob?: { generation: number; path: string; selection?: DigestSelection; batchIndex?: number; cancelled: boolean };
   private renderedSections = new WeakMap<HTMLElement, RenderedSection & {path: string}>();
   private selectionButton?: HTMLButtonElement;
-  private calloutSource?: {view: MarkdownView; file: TFile; selection: Promise<SelectionSnapshot | undefined>};
+  private calloutSource?: {view: MarkdownView; file: TFile; position: Promise<ClaudianCalloutPosition | undefined>};
   private calloutBusy = false;
   private claudianPanes = new Map<HTMLElement, () => void>();
   private recentClaudianLeaf?: WorkspaceLeaf;
@@ -57,8 +57,11 @@ export default class NoteDigestPlugin extends Plugin {
     });
     this.registerEvent(this.app.workspace.on('layout-change', () => this.watchClaudianPanes()));
     this.registerDomEvent(document, 'keyup', event => {
-      if (!event.shiftKey || !/^(Arrow|Home|End|Page)/.test(event.key)) return;
-      this.rememberCalloutSource(event.target);
+      const extendsSelection = event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key);
+      if (extendsSelection || (event.target instanceof Element && event.target.closest('.cm-content'))) {
+        this.rememberCalloutSource(event.target);
+      }
+      if (!extendsSelection) return;
       const selection = window.getSelection();
       if (selection) this.offerClaudianDraft(selection);
     });
@@ -215,36 +218,52 @@ export default class NoteDigestPlugin extends Plugin {
     if (target instanceof Node) this.setCalloutSource(this.articleViewContaining(target), window.getSelection());
   }
   private setCalloutSource(view: MarkdownView | undefined, selection: Selection | null): void {
-    if (!view?.file) return;
-    this.calloutSource = {view, file: view.file, selection: this.readArticleSelection(selection, view).catch(() => undefined)};
+    const file = view?.file;
+    if (!view || !file) return;
+    const editor = view.getMode() === 'source' ? view.editor : undefined;
+    const position = editor?.hasFocus() && !selection?.toString().trim() && !editor.getSelection() &&
+      editor.listSelections().length === 1 && !this.collection.isLearningNote(file.path)
+      ? Promise.resolve({path: file.path, source: editor.getValue(), offset: editor.posToOffset(editor.getCursor())})
+      : this.readArticleSelection(selection, view).catch(() => undefined);
+    this.calloutSource = {view, file, position};
   }
   private async saveClaudianCallout(view: object, message: HTMLElement, mode: ClaudianSaveMode): Promise<void> {
     if (this.calloutBusy) return;
     this.calloutBusy = true;
     const label = mode === 'exchange' ? '问答' : '答案';
     try {
-      // A sidebar click can change focus while the note still owns the live selection.
+      // The sidebar may take focus before save, so keep the last position captured in the article.
       const live = window.getSelection();
-      this.setCalloutSource(this.articleViewForSelection(live), live);
+      const selectionView = this.articleViewForSelection(live);
+      const focused = document.activeElement;
+      const editorView = focused?.closest('.cm-content') ? this.articleViewContaining(focused) : undefined;
+      if (selectionView) this.setCalloutSource(selectionView, live);
+      else if (editorView?.getMode() === 'source' && editorView.editor.hasFocus()) this.setCalloutSource(editorView, live);
       const anchor = this.calloutSource;
-      if (!anchor) throw new Error('请先在原文中选中一句话。');
+      const locate = '请先在原文中选中一句话，或在编辑模式放置光标。';
+      if (!anchor) throw new Error(locate);
       const note = readClaudianNote(view, message, mode);
       if (!note) throw new Error(mode === 'exchange'
         ? '无法读取这轮完整问答。请确认回复已完成，并在对话中显示对应提问。'
         : '无法读取这条答案。请确认回复已完成。');
-      const selection = await anchor.selection;
-      if (!selection || !canCollectSelection(selection)) throw new Error('请先在原文中选中可定位的一句话。');
+      const position = await anchor.position;
+      if (!position || ('text' in position && !canCollectSelection(position))) throw new Error(locate);
+      const cursor = 'offset' in position;
       const {file} = anchor;
-      if (this.stopped || this.calloutSource !== anchor || anchor.view.file !== file || file.path !== selection.path ||
-          this.app.workspace.getActiveFile() !== file) throw new Error('原文已切换，请重新选中原句。');
-      await this.storage.update(selection.path, current => {
-        if (this.stopped || this.calloutSource !== anchor || current === null || file.path !== selection.path) {
-          throw new Error('原文已切换，请重新选中原句。');
+      const verifySource = () => {
+        if (this.stopped || this.calloutSource !== anchor || anchor.view.file !== file || file.path !== position.path ||
+            this.app.workspace.getActiveFile() !== file || (cursor && anchor.view.getMode() !== 'source')) {
+          throw new Error('批注位置已变化，请重新选择原句或放置光标。');
         }
-        return insertClaudianCallout(current, selection, note);
+      };
+      verifySource();
+      await this.storage.update(position.path, current => {
+        verifySource();
+        if (current === null) throw new Error('原文文件已不存在。');
+        return insertClaudianCallout(current, position, note);
       });
       if (this.calloutSource === anchor) this.calloutSource = undefined;
-      new Notice(`已在原句下方插入折叠${label}。`);
+      new Notice(`已在${cursor ? '光标对应位置' : '原句下方'}插入折叠${label}。`);
     } catch (error) { new Notice(error instanceof Error ? error.message : `写入${label}失败。`); }
     finally { this.calloutBusy = false; }
   }

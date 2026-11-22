@@ -115,9 +115,14 @@ function isSupported(source: string, block: ReadingBlock): boolean {
   const raw = source.slice(start, end);
   return (block.type === 'tableCell' || !raw.includes('|')) &&
     !/\[\[|%%|\$|==|~~|(?:^|\s)\^[\w-]+\s*$|(?:^|\s)#[\w/-]+/m.test(raw) &&
-    ((source.slice(0, start).match(/%%/g)?.length ?? 0) % 2 === 0) &&
-    ((source.slice(0, start).match(/^ {0,3}\$\$[ \t]*\r?$/gm)?.length ?? 0) % 2 === 0) &&
+    outsideObsidianBlocks(source, start) &&
     visibleChildren(block.children) !== undefined;
+}
+
+function outsideObsidianBlocks(source: string, offset: number): boolean {
+  const before = source.slice(0, offset);
+  return (before.match(/%%/g)?.length ?? 0) % 2 === 0 &&
+    (before.match(/^ {0,3}\$\$[ \t]*\r?$/gm)?.length ?? 0) % 2 === 0;
 }
 
 function sectionRange(source: string, section: RenderedSection): SourceRange | undefined {
@@ -280,6 +285,29 @@ export function insertionTarget(source: string, selection: SourceRange, mode: 'i
   } else {
     const offset = range(paragraph).end;
     return {offset, tree, index};
+  }
+}
+
+export function cursorInsertionTarget(source: string, cursor: number) {
+  if (!Number.isInteger(cursor) || cursor < 0 || cursor > source.length) return;
+  const tree = markdownBody(source);
+  const lineStart = cursor === 0 ? 0 : source.lastIndexOf('\n', cursor - 1) + 1;
+  const lineEnd = source.indexOf('\n', cursor);
+  if (cursor > 0 && lineEnd >= 0 && /^[ \t]*\r?$/.test(source.slice(lineStart, lineEnd))) {
+    const nextIndex = tree.children.findIndex(node => range(node).start > lineEnd);
+    if (nextIndex < 1) return;
+    const previous = range(tree.children[nextIndex - 1]);
+    const next = range(tree.children[nextIndex]);
+    // The gap must really be blank, including in the unmasked source.
+    if (previous.end <= lineStart && !source.slice(previous.end, next.start).trim() && outsideObsidianBlocks(source, lineStart)) {
+      return {offset: lineStart, tree, index: nextIndex - 1, blankLine: true};
+    }
+    return;
+  }
+  const index = tree.children.findIndex(node => node.type === 'paragraph' && contains(range(node), {start: cursor, end: cursor}));
+  const paragraph = tree.children[index];
+  if (paragraph?.type === 'paragraph' && isSupported(source, paragraph)) {
+    return {offset: range(paragraph).end, tree, index, blankLine: false};
   }
 }
 

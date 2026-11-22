@@ -1,6 +1,6 @@
 import { canCollectSelection, escapeMarkdown, type SelectionSnapshot } from './core';
 import { claudianTitle } from './claudian-title';
-import { insertionTarget, markdownBody, markdownStructure } from './markdown-source';
+import { cursorInsertionTarget, insertionTarget, markdownBody, markdownStructure } from './markdown-source';
 
 export const CLAUDIAN_VIEW = 'claudian-view';
 const saveButtonClass = 'note-digest-save-claudian';
@@ -28,6 +28,7 @@ interface ClaudianView {
 }
 
 export interface ClaudianNote { question?: string; answer: string }
+export type ClaudianCalloutPosition = SelectionSnapshot | {path: string; source: string; offset: number};
 
 function responseActions(message: Element): Element | null {
   const actions = message.querySelector(':scope > .claudian-message-actions');
@@ -86,7 +87,7 @@ export function watchClaudian(root: HTMLElement, save: (message: HTMLElement, mo
       button.type = 'button';
       button.className = saveButtonClass;
       button.textContent = label;
-      button.title = '先在原文选中一句，再点击保存';
+      button.title = '选中原句，或在编辑模式将光标放在正文段落或段间空行';
       button.onmousedown = event => event.preventDefault();
       button.onclick = event => {
         event.stopPropagation();
@@ -128,17 +129,20 @@ function quoteLines(text: string, newline: string): string {
   }).join(newline);
 }
 
-export function insertClaudianCallout(current: string, selection: SelectionSnapshot, note: ClaudianNote): string {
-  if (current !== selection.source || !canCollectSelection(selection)) throw new Error('原文选区已变化，请重新选中原句。');
-  const target = insertionTarget(current, selection, 'below');
-  if (!target) throw new Error('请在正文的普通段落内选中原句。');
+export function insertClaudianCallout(current: string, position: ClaudianCalloutPosition, note: ClaudianNote): string {
+  const cursor = 'offset' in position;
+  if (current !== position.source || (!cursor && !canCollectSelection(position))) {
+    throw new Error(cursor ? '原文已修改，请重新放置光标。' : '原文选区已变化，请重新选中原句。');
+  }
+  const target = cursor ? cursorInsertionTarget(current, position.offset) : insertionTarget(current, position, 'below');
+  if (!target) throw new Error(cursor ? '请将光标放在普通正文段落或段间空行。' : '请在正文的普通段落内选中原句。');
   const {question, answer} = note;
   const label = question === undefined ? '答案' : '问答';
   if (question?.trim() === '' || !answer.trim() || (question?.length ?? 0) + answer.length > 40_000) {
     throw new Error(`${label}为空或过长，无法插入。`);
   }
   const newline = current.includes('\r\n') ? '\r\n' : '\n';
-  const title = escapeMarkdown(claudianTitle(note, selection.text)).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
+  const title = escapeMarkdown(claudianTitle(note, cursor ? '' : position.text)).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
   const header = question === undefined ? '> [!note]- ' : '> [!question]- ';
   const body = (question === undefined ? [
     quoteLines(answer, newline),
@@ -157,16 +161,20 @@ export function insertClaudianCallout(current: string, selection: SelectionSnaps
   const adjacentBody = adjacent.slice(firstBreak + newline.length);
   // Recognize the same saved text even if the previous title is fixed or was edited.
   if (adjacent.startsWith(header) && firstBreak >= 0 && (adjacentBody === body || adjacentBody.startsWith(body + newline))) {
-    throw new Error(`${label}已在原句下方。`);
+    throw new Error(cursor ? `这个位置已保存相同${label}。` : `${label}已在原句下方。`);
   }
-  // Existing blank lines can supply the paragraph break after the callout.
-  const breakAfter = following.trim() && !/^(?:[ \t]*\r?\n){2}/.test(following) ? newline + newline : '';
+  const before = current.slice(0, target.offset);
+  const blankLine = 'blankLine' in target && target.blankLine;
+  const breakBefore = blankLine ? (/(?:^|\n)[ \t]*\r?\n$/.test(before) ? '' : newline) : newline + newline;
+  // Keep the existing blank line after a callout inserted at its start.
+  const breakAfter = blankLine ? newline :
+    following.trim() && !/^(?:[ \t]*\r?\n){2}/.test(following) ? newline + newline : '';
   const block = header + title + newline + body;
-  const updated = current.slice(0, target.offset) + newline + newline + block + breakAfter + following;
+  const updated = before + breakBefore + block + breakAfter + following;
   const parsed = markdownBody(updated);
   const [inserted] = parsed.children.splice(target.index + 1, 1);
   if (inserted?.type !== 'blockquote' || markdownStructure(parsed) !== markdownStructure(target.tree)) {
-    throw new Error('选区附近的 Markdown 结构无法安全插入，请换一个普通段落。');
+    throw new Error('这个位置的 Markdown 结构无法安全插入，请换一个普通段落。');
   }
   return updated;
 }

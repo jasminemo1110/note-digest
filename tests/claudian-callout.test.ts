@@ -26,6 +26,50 @@ test('inserts a native collapsed Q&A after the selected occurrence, preserving t
   assert.throws(() => insertClaudianCallout(previouslySaved, oldSelection, exchange), /已在原句下方/);
 });
 
+test('a cursor between words inserts after the whole paragraph and uses the exact occurrence', () => {
+  const paragraph = 'Read these\nwords together.';
+  const source = `${paragraph}\n\n${paragraph}\n\nNext paragraph.`;
+  const position = {path: 'Article.md', source, offset: source.lastIndexOf(' together')};
+  const answer = {answer: 'These words belong together.'};
+  const changed = insertClaudianCallout(source, position, answer);
+  const block = '\n\n> [!note]- These words belong together\\.\n> These words belong together.';
+  assert.equal(changed, source.replace('\n\nNext paragraph.', block + '\n\nNext paragraph.'));
+  assert.throws(() => insertClaudianCallout(changed, position, answer), /原文已修改/);
+  assert.throws(() => insertClaudianCallout(changed, {...position, source: changed}, answer), /已保存相同答案/);
+});
+
+test('a cursor on a blank line saves between blocks at the chosen line, including CRLF and indentation', () => {
+  const source = 'First paragraph.\r\n\r\n \t\r\n\r\nSecond paragraph.';
+  const lineStart = source.indexOf(' \t');
+  const position = {path: 'Article.md', source, offset: lineStart + 1};
+  const changed = insertClaudianCallout(source, position, exchange);
+  const end = changed.indexOf(' \t');
+  assert.match(changed.slice(lineStart, end), /^> \[!question\]- .*\r\n>[\s\S]*> - B 是从句。\r\n$/);
+  assert.equal(changed.slice(0, lineStart) + changed.slice(end), source);
+
+  const tight = 'First paragraph.\n\nSecond paragraph.';
+  const firstBlank = {...position, source: tight, offset: tight.indexOf('\n') + 1};
+  const inserted = insertClaudianCallout(tight, firstBlank, exchange);
+  assert.match(inserted, /^First paragraph\.\n\n> \[!question\]- /);
+  assert.ok(inserted.endsWith('\n\nSecond paragraph.'));
+  assert.throws(() => insertClaudianCallout(inserted, {...firstBlank, source: inserted}, exchange), /已保存相同问答/);
+});
+
+test('a blank line inside Markdown syntax, Obsidian blocks, or a learning section is not an insertion point', () => {
+  for (const marked of [
+    '---\ntitle: Example\n|\nauthor: Me\n---\n\nBody.',
+    'Paragraph.\n\n```\nCode\n|\nMore code\n```\n\nOther.',
+    'Paragraph.\n\n- One\n|\n- Two\n\nOther.',
+    'Paragraph.\n\n%% Start comment.\n|\nMore. %%\n\nOther.',
+    'Paragraph.\n\n$$\nx\n|\ny\n$$\n\nOther.',
+    'Paragraph.\n\n<!-- note-digest:learning -->\n## Note Digest 学习笔记\n|\nSaved note.',
+  ]) {
+    const offset = marked.indexOf('|');
+    const source = marked.replace('|', '');
+    assert.throws(() => insertClaudianCallout(source, {path: 'Article.md', source, offset}, exchange), /普通正文段落或段间空行/);
+  }
+});
+
 test('titles use the vocabulary, comparison, or sentence structure in the saved chat', () => {
   const vocab = {question: '英语里面“潜力”这个名词怎么说？', answer: '“潜力”就是 **potential**，它也可以作**不可数名词**。'};
   assert.equal(claudianTitle(vocab, ''), '单词问答：potential');
