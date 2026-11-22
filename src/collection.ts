@@ -14,6 +14,7 @@ const WORD_SOURCES_END = '<!-- note-digest:word-sources-end -->';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
 export interface SaveUndo { readonly recordId: string; readonly id: string }
 interface WordNote { id: string; path: string }
+interface SidebarWord { id: string; note: WordNote }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
   originalContext?: string; unlocated?: true;
@@ -22,7 +23,7 @@ export interface LearningRecord {
   wordNote?: WordNote;
 }
 type LearningCard = Pick<LearningRecord, 'id' | 'kind' | 'anchor' | 'result' | 'originalContext'>;
-export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
+export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[]; sidebarWords?: SidebarWord[] }
 export interface StoragePort {
   read(path: string): Promise<string | null>;
   /** Must synchronously transform current content, or exclusively create when absent. */
@@ -44,6 +45,7 @@ export function collectionFeedback(report: SaveReport): {text: string; duplicate
   return {text: report.record.kind === 'word' ? '本词已收藏' : '此金句已收藏', duplicate: true};
 }
 const ID = /^[a-zA-Z0-9-]{1,80}$/;
+const HASH = /^[0-9a-f]{64}$/;
 function validPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1000 && !/[\r\n\0\\]/.test(value) &&
     !value.startsWith('/') && !value.split('/').some(part => part === '..' || part === '.' || !part) && value.endsWith('.md');
@@ -67,6 +69,8 @@ export function loadCollection(input: unknown): CollectionData {
   }
   if (documents.some(doc => doc.path && notes.has(doc.path))) throw new Error('学习笔记与原文路径冲突。');
   const recordIds = new Set<string>();
+  const validWordNote = (word: WordNote | undefined) => word && typeof word.id === 'string' && HASH.test(word.id) &&
+    validPath(word.path) && !paths.has(word.path) && !notes.has(word.path) && word.path !== SIDEBAR_NOTE_PATH;
   for (const record of records) {
     if (!record || typeof record.id !== 'string' || !ID.test(record.id) || recordIds.has(record.id) || !ids.has(record.documentId) ||
         !['word', 'quote'].includes(record.kind) || typeof record.active !== 'boolean' || (record.deletionPending !== undefined && typeof record.deletionPending !== 'boolean') || !Array.isArray(record.savedTo) || !record.savedTo.every(validPath) || typeof record.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(record.createdAt) ||
@@ -94,13 +98,16 @@ export function loadCollection(input: unknown): CollectionData {
       if (!pending || typeof pending.id !== 'string' || !ID.test(pending.id) || !Array.isArray(pending.paths) ||
           !pending.paths.length || !pending.paths.every(validPath)) throw new Error('收藏撤销数据损坏。');
     }
-    if (record.wordNote !== undefined && (record.kind !== 'word' || !record.wordNote ||
-        typeof record.wordNote.id !== 'string' || !/^[0-9a-f]{64}$/.test(record.wordNote.id) || !validPath(record.wordNote.path) ||
-        paths.has(record.wordNote.path) || notes.has(record.wordNote.path))) throw new Error('单词笔记数据损坏。');
+    if (record.wordNote !== undefined && (record.kind !== 'word' || !validWordNote(record.wordNote))) throw new Error('单词笔记数据损坏。');
     recordIds.add(record.id);
     record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
   }
-  return structuredClone({version: 1 as const, secretName: data.secretName, documents, records});
+  const sidebarWords = data.sidebarWords as SidebarWord[] | undefined;
+  if (sidebarWords !== undefined && (!Array.isArray(sidebarWords) || sidebarWords.some(card => !card || typeof card.id !== 'string' ||
+      !HASH.test(card.id) || recordIds.has(card.id) || !validWordNote(card.note)) || new Set(sidebarWords.map(card => card.id)).size !== sidebarWords.length)) {
+    throw new Error('侧栏收藏数据损坏。');
+  }
+  return structuredClone({version: 1 as const, secretName: data.secretName, documents, records, ...(sidebarWords && {sidebarWords})});
 }
 const quoted = (value: string) => escapeMarkdown(value).split(/\r?\n/).map(line => '> ' + line).join('\n');
 function commonUsagesMarkdown(result: DigestResult): string {
@@ -114,8 +121,8 @@ function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
 }
 function wordNoteHeader(word: WordNote): string { return `<!-- note-digest:word-note:${word.id} -->`; }
-function wordTitle(record: LearningRecord): string {
-  const title = explanationHeadword(record.anchor.text, record.result).normalize('NFKC').trim().replace(/\s+/g, ' ');
+function wordTitle(headword: string): string {
+  const title = headword.normalize('NFKC').trim().replace(/\s+/g, ' ');
   return title.replace(/^[\s.,!?;:()“”]+|[\s.,!?;:()“”]+$/g, '') || title;
 }
 function wordSourceLine(doc: SourceDocument): string {
@@ -329,12 +336,14 @@ function appendGroupedCard(current: string, kind: Kind, card: string): string {
   if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
   return current.slice(0, endIndex) + card + '\n' + current.slice(endIndex);
 }
-function prepareWordNote(current: string | null, record: LearningRecord, doc: SourceDocument): string {
-  const word = record.wordNote!;
-  const heading = escapeMarkdown(Array.from(wordTitle(record)).slice(0, 120).join('')).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
+function prepareWordNote(current: string | null, word: WordNote, title: string): string {
+  const heading = escapeMarkdown(Array.from(title).slice(0, 120).join('')).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
   const base = current ?? `${wordNoteHeader(word)}\n# ${heading}\n\n${WORD_SOURCES_START}\n\n${WORD_SOURCES_END}\n`;
-  if (!ownedIndependentNote(base, word.path, record, doc)) throw new Error('目标笔记已有其他内容，已保留该文件。');
-  return addWordSource(base, doc);
+  if (!base.startsWith(wordNoteHeader(word) + '\n')) throw new Error('目标笔记已有其他内容，已保留该文件。');
+  return base;
+}
+function prepareArticleWordNote(current: string | null, record: LearningRecord, doc: SourceDocument): string {
+  return addWordSource(prepareWordNote(current, record.wordNote!, wordTitle(explanationHeadword(record.anchor.text, record.result))), doc);
 }
 /** Explicit migration moves only byte-identical generated cards into typed groups. */
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
@@ -379,35 +388,79 @@ export class CollectionStore {
   notePathFor(path: string): string | undefined { return this.data.documents.find(doc => doc.path === path)?.notePath; }
   isLearningNote(path: string): boolean {
     return path === SIDEBAR_NOTE_PATH || path.startsWith(WORD_NOTE_FOLDER) || this.data.documents.some(doc => doc.notePath === path) ||
-      this.data.records.some(record => record.wordNote?.path === path);
+      this.data.records.some(record => record.wordNote?.path === path) || !!this.data.sidebarWords?.some(card => card.note.path === path);
   }
   private async planWordNote(data: CollectionData, record: LearningRecord): Promise<WordNote> {
-    if (record.wordNote) return record.wordNote;
-    const key = wordTitle(record).toLowerCase();
+    return record.wordNote ??= await this.findWordNote(data, wordTitle(explanationHeadword(record.anchor.text, record.result)));
+  }
+  private async findWordNote(data: CollectionData, title: string): Promise<WordNote> {
+    const key = title.toLowerCase();
     const id = await digestText(key);
-    const known = data.records.find(other => other.wordNote?.id === id)?.wordNote;
+    const known = data.records.find(other => other.wordNote?.id === id)?.wordNote ?? data.sidebarWords?.find(card => card.note.id === id)?.note;
     const name = Array.from(key.replace(/[<>:"/\\|?*\[\]#^\x00-\x1f]/g, '-').replace(/^[. ]+|[. ]+$/g, '')).slice(0, 40).join('') || 'word';
     const reserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name);
     const fileName = name === key && !reserved ? name : `${name.replaceAll('.', '-')}--${id.slice(0, 16)}`;
-    return record.wordNote = known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
+    return known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
   }
-  saveSidebarWord(selection: SidebarSelection, input: DigestResult): Promise<{text: string; duplicate: boolean}> {
+  private async writeSidebarCard(id: string, title: string, card: string, verifyOriginal = false): Promise<{path: string; duplicate: boolean}> {
+    const next = structuredClone(this.data);
+    const existing = next.sidebarWords?.find(entry => entry.id === id);
+    const note = existing?.note ?? await this.findWordNote(next, title);
+    if (!existing) {
+      (next.sidebarWords ??= []).push({id, note});
+      await this.commit(next);
+    }
+    const marker = `<!-- note-digest:record:${id} -->`;
+    let duplicate = false;
+    await this.port.update(note.path, current => {
+      const base = prepareWordNote(current, note, title);
+      duplicate = base.includes(marker);
+      if (!duplicate) return appendGroupedCard(base, 'word', '\n\n' + card);
+      if (verifyOriginal && (!base.includes(card) || base.indexOf(marker) !== base.lastIndexOf(marker))) {
+        throw new Error('新笔记中已有不同版本的卡片，已保留旧笔记。');
+      }
+      return base;
+    });
+    return {path:note.path, duplicate};
+  }
+  saveSidebarWord(selection: SidebarSelection, input: DigestResult): Promise<{text: string; duplicate: boolean; path: string}> {
     return this.queue(async () => {
       const result = validateResult(input, 'explain');
       const anchor = contextualAnchor(selection);
       const key = JSON.stringify([anchor.text, anchor.block].map(value => value.replace(/\s+/g, ' ')));
       const id = await digestText(key);
-      const marker = `<!-- note-digest:record:${id} -->`;
-      let duplicate = false;
-      await this.port.update(SIDEBAR_NOTE_PATH, current => {
-        if (current !== null && !current.split(/\r?\n/).includes(SIDEBAR_NOTE_HEADER)) {
-          throw new Error('侧栏学习笔记路径已有同名文件，已保留该文件。');
-        }
-        const base = current ?? `${SIDEBAR_NOTE_HEADER}\n# 侧栏学习笔记\n`;
-        duplicate = base.includes(marker);
-        return duplicate ? base : appendGrouped(base, {id, kind:'word', anchor, result}, anchor.block);
-      });
-      return {text:duplicate ? '本词已收藏' : '已收藏到侧栏学习笔记', duplicate};
+      const title = wordTitle(explanationHeadword(anchor.text, result));
+      const card = markedCardMarkdown({id, kind:'word', anchor, result}, anchor.block).trimStart();
+      const saved = await this.writeSidebarCard(id, title, card);
+      return {...saved, text:saved.duplicate ? '本词已收藏' : '已收藏到单词笔记'};
+    });
+  }
+  copyLegacySidebarWords(): Promise<{paths: string[]; sourceDigest: string; cards: number; onlyCards: boolean} | undefined> {
+    return this.queue(async () => {
+      const current = await this.port.read(SIDEBAR_NOTE_PATH);
+      if (current === null) return;
+      if (!current.startsWith(SIDEBAR_NOTE_HEADER + '\n') && !current.startsWith(SIDEBAR_NOTE_HEADER + '\r\n')) {
+        throw new Error('无法确认旧侧栏学习笔记的归属。');
+      }
+      const pattern = /^<!-- note-digest:record:([0-9a-f]{64}) -->\r?\n#### ([^\r\n]+)\r?\n[\s\S]*?^<!-- note-digest:record-end:\1 -->(?:\r?\n|$)/gm;
+      const cards = [...current.matchAll(pattern)];
+      const remainder = current.replace(pattern, '');
+      if (/<!-- note-digest:record(?:-end)?:/.test(remainder) || new Set(cards.map(card => card[1])).size !== cards.length ||
+          cards.some(([card]) => (card.match(/<!-- note-digest:record(?:-end)?:/g) ?? []).length !== 2)) {
+        throw new Error('旧侧栏卡片边界不完整，已保留旧笔记。');
+      }
+      const paths = [];
+      for (const [card, id, headword] of cards) {
+        const title = wordTitle(headword.replace(/\\([!-/:-@\[-`{-~])/g, '$1'));
+        if (!title) throw new Error('旧侧栏卡片缺少可用词头，已保留旧笔记。');
+        const saved = await this.writeSidebarCard(id, title, card.endsWith('\n') ? card : card + '\n', true);
+        paths.push(saved.path);
+      }
+      const group = groupTokens('word');
+      const shell = remainder.split(/\r?\n/).filter(line => line.trim()).join('\n');
+      const header = `${SIDEBAR_NOTE_HEADER}\n# 侧栏学习笔记`;
+      return {paths:[...new Set(paths)], sourceDigest:await digestText(current), cards:cards.length,
+        onlyCards:shell === header || shell === `${header}\n${group.start}\n### 单词\n${group.end}`};
     });
   }
   setSecretName(name: string): Promise<void> { return this.queue(() => this.commit({...this.data, secretName: name})); }
@@ -425,6 +478,7 @@ export class CollectionStore {
         if (record.pendingUndo) record.pendingUndo.paths = record.pendingUndo.paths.map(movePath);
         if (record.wordNote) record.wordNote = {...record.wordNote, path: movePath(record.wordNote.path)};
       }
+      for (const card of next.sidebarWords ?? []) card.note = {...card.note, path:movePath(card.note.path)};
       if (newPath !== null) for (const record of next.records) {
         for (const copy of record.pendingExplanation?.copies ?? []) {
           if (copy.path === oldPath || copy.path.startsWith(oldPath + '/')) copy.path = newPath + copy.path.slice(oldPath.length);
@@ -553,7 +607,7 @@ export class CollectionStore {
             // Persist the destination before copying so an interrupted migration can resume.
             await this.commit(next);
             await this.port.update(word.path, current => {
-              const base = prepareWordNote(current, record, doc);
+              const base = prepareArticleWordNote(current, record, doc);
               const existing = savedCardRange(base, record, doc);
               if (!existing) return appendGroupedCard(base, 'word', '\n\n' + card);
               if (base.slice(existing.start, existing.end) !== card) throw new Error('新旧卡片内容不同，已保留两处内容。');
@@ -729,7 +783,7 @@ export class CollectionStore {
             const isSource = path === selection.path;
             if (isSource && (content === null || articleBody(content) !== articleBody(selection.source))) throw new Error('原文已变化，请重新选择后重试。');
             if (path === record!.wordNote?.path) {
-              const base = prepareWordNote(content, record!, doc!);
+              const base = prepareArticleWordNote(content, record!, doc!);
               existed = base.includes(`<!-- note-digest:record:${record!.id} -->`);
               return appendRecord(base, record!, false);
             }

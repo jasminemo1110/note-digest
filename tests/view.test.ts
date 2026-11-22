@@ -395,7 +395,7 @@ test('sidebar explanation reuses the captured context and saves only after click
   Object.assign(plugin.collection, {
     saveSidebarWord: async (...args: any[]) => {
       calls.push(['saveSidebarWord', ...args]);
-      return {text:'已收藏到侧栏学习笔记', duplicate:false};
+      return {text:'已收藏到单词笔记', duplicate:false, path:'Digest/单词学习/compelling.md'};
     },
   });
   const selection = {sidebar:true, text:'compelling', context:'A compelling argument.', contextOffset:2};
@@ -410,11 +410,13 @@ test('sidebar explanation reuses the captured context and saves only after click
   assert.equal(document.querySelector('blockquote')?.textContent, selection.context);
   assert.equal(document.querySelector('.note-digest-insert, select'), null);
   assert.equal(calls.length, 1);
-  const save = Array.from(document.querySelectorAll('.note-digest-save button')).find(button => button.textContent === '收藏到独立学习笔记') as HTMLButtonElement;
+  const save = Array.from(document.querySelectorAll('.note-digest-save button')).find(button => button.textContent === '收藏到单词笔记') as HTMLButtonElement;
   await save.onclick!(new (domEvent(document))('click') as any);
   assert.deepEqual(calls[1], ['saveSidebarWord', selection, explained]);
-  assert.match(document.querySelector('.note-digest-save [role="status"]')!.textContent!, /已收藏到侧栏学习笔记/);
-  assert.ok(document.body.textContent!.includes('打开侧栏学习笔记'));
+  assert.match(document.querySelector('.note-digest-save [role="status"]')!.textContent!, /已收藏到单词笔记/);
+  view.app.workspace.openLinkText = (path: string) => { calls.push(['open',path]); };
+  [...document.querySelectorAll('button')].find(button => button.textContent === '打开单词笔记')!.click();
+  assert.deepEqual(calls.at(-1), ['open','Digest/单词学习/compelling.md']);
 });
 
 test('duplicate saving shows one prominent message without paths', async () => {

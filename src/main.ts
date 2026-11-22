@@ -51,9 +51,11 @@ export default class NoteDigestPlugin extends Plugin {
     this.addCommand({ id: 'summarize-article', name: 'Digest 全文', callback: () => { void this.summarizeCurrentArticle(); } });
     this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
     this.addCommand({ id: 'split-word-notes', name: '将旧独立学习笔记拆为单词笔记', callback: () => {
-      void this.collection.splitWordNotes().then(({moved, notes, failures}) => {
+      void this.collection.splitWordNotes().then(async ({moved, notes, failures}) => {
         const pending = failures.length ? `\n另有 ${failures.length} 张需要检查，可再运行此命令。${failures.map(failure => '\n' + failure.message).join('')}` : '';
-        new Notice(`已将 ${moved} 张词卡移入 ${notes} 篇单词笔记。${pending}`);
+        const sidebar = await this.collection.copyLegacySidebarWords();
+        const copied = sidebar?.cards ? `\n已核对 ${sidebar.cards} 张旧侧栏词卡的新副本。` : '';
+        new Notice(`已将 ${moved} 张文章词卡移入 ${notes} 篇单词笔记。${pending}${copied}`);
       }).catch(error => new Notice(error instanceof Error ? error.message : '无法拆分独立学习笔记。'));
     } });
     this.app.workspace.onLayoutReady(() => {

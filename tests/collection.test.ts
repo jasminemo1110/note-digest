@@ -123,7 +123,8 @@ test('normalized cards use the base headword in both targets and keep original a
   assert.equal(duplicate.record.id,saved.record.id);
   const sidebar=await f.store.saveSidebarWord({sidebar:true,text:'Interpreting',context:original,contextOffset:0},explanation);
   assert.equal(sidebar.duplicate,false);
-  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!,/#### interpret\n[\s\S]*其他常见用法[\s\S]*interpret for a guest/);
+  assert.equal(sidebar.path,saved.targets[1].path);
+  assert.match(f.files.get(sidebar.path)!,/#### interpret\n[\s\S]*其他常见用法[\s\S]*interpret for a guest/);
 });
 
 test('explicit update changes an old inflected title in both copies and preserves manual notes', async () => {
@@ -155,32 +156,32 @@ test('sidebar lookup saves the exact source sentence and complete word card in i
   const context = 'A compelling story. The editor needs a compelling argument. Read the whole paragraph.';
   const saved = await f.store.saveSidebarWord(sidebarWord(context, context.lastIndexOf('compelling')), result);
   assert.equal(saved.duplicate, false);
-  assert.deepEqual([...f.files.keys()], [path, SIDEBAR_NOTE_PATH]);
+  assert.deepEqual([...f.files.keys()], [path, 'Digest/单词学习/compelling.md']);
   assert.equal(f.files.get(path), source);
-  assert.deepEqual(f.durable(), loadCollection(null));
+  assert.equal(f.durable().records.length, 0);
   assert.equal(f.store.isLearningNote(SIDEBAR_NOTE_PATH), true);
-  const note = f.files.get(SIDEBAR_NOTE_PATH)!;
+  const note = f.files.get(saved.path)!;
   assert.match(note, /#### compelling\n/);
   assert.ok(note.includes('The editor needs a compelling argument\\.'));
-  assert.doesNotMatch(note, /A compelling story|Read the whole paragraph/);
+  assert.doesNotMatch(note, /返回原文|A compelling story|Read the whole paragraph/);
   for (const field of ['音标','有说服力的','语境含义','用法','例句','另一个搭配']) assert.ok(note.includes(field));
 });
 
 test('sidebar saves deduplicate across restarts, keep distinct sentences and preserve edits', async () => {
   const f = fixture();
   const same = sidebarWord('A compelling argument.');
-  await f.store.saveSidebarWord(same, result);
-  const edited = f.files.get(SIDEBAR_NOTE_PATH)!.replace('有说服力的', '我的译文') + '\n我的备注\n';
-  f.files.set(SIDEBAR_NOTE_PATH, edited);
+  const {path:wordPath}=await f.store.saveSidebarWord(same, result);
+  const edited = f.files.get(wordPath)!.replace('有说服力的', '我的译文') + '\n我的备注\n';
+  f.files.set(wordPath, edited);
   const restarted = new CollectionStore(loadCollection(f.durable()), f.port);
   const outcomes = await Promise.all([
     restarted.saveSidebarWord(sidebarWord('Introduction. A compelling argument. Closing thoughts.'), {...result, translation:'另一版译文'}),
-    restarted.saveSidebarWord(same, result),
+    restarted.saveSidebarWord(same, {...result, headword:'different'}),
   ]);
   assert.ok(outcomes.every(saved => saved.duplicate));
-  assert.equal(f.files.get(SIDEBAR_NOTE_PATH), edited);
+  assert.equal(f.files.get(wordPath), edited);
   await restarted.saveSidebarWord(sidebarWord('A compelling story.'), result);
-  const note = f.files.get(SIDEBAR_NOTE_PATH)!;
+  const note = f.files.get(wordPath)!;
   assert.equal((note.match(/#### compelling/g) ?? []).length, 2);
   assert.ok(note.includes('我的译文') && note.endsWith('我的备注\n'));
 });
@@ -188,17 +189,53 @@ test('sidebar saves deduplicate across restarts, keep distinct sentences and pre
 test('sidebar saves validate explanations, reject a foreign note and allow retry after failure', async () => {
   const f = fixture();
   const withoutContext = sidebarWord('', 0);
+  const wordPath = 'Digest/单词学习/compelling.md';
   await assert.rejects(f.store.saveSidebarWord(withoutContext, {translation:'单独译文'}));
-  assert.equal(f.files.has(SIDEBAR_NOTE_PATH), false);
-  f.files.set(SIDEBAR_NOTE_PATH, '# 用户自己的笔记\n');
-  await assert.rejects(f.store.saveSidebarWord(withoutContext, result), /同名文件/);
-  assert.equal(f.files.get(SIDEBAR_NOTE_PATH), '# 用户自己的笔记\n');
-  f.files.delete(SIDEBAR_NOTE_PATH);
-  f.fail(SIDEBAR_NOTE_PATH);
+  assert.equal(f.files.has(wordPath), false);
+  f.files.set(wordPath, '# 用户自己的笔记\n');
+  await assert.rejects(f.store.saveSidebarWord(withoutContext, result), /目标笔记已有其他内容/);
+  assert.equal(f.files.get(wordPath), '# 用户自己的笔记\n');
+  f.files.delete(wordPath);
+  f.fail(wordPath);
   await assert.rejects(f.store.saveSidebarWord(withoutContext, result), /模拟磁盘失败/);
   f.fail('');
   await f.store.saveSidebarWord(withoutContext, result);
-  assert.match(f.files.get(SIDEBAR_NOTE_PATH)!, /原始语境\*\*\n\n> compelling\n/);
+  assert.match(f.files.get(wordPath)!, /原始语境\*\*\n\n> compelling\n/);
+});
+
+test('migration copies bounded sidebar cards to the shared word note and detects unrelated text', async () => {
+  const seed = fixture();
+  const selection = {sidebar:true as const,text:'compelling.',context:'The story is compelling.',contextOffset:13};
+  const saved = await seed.store.saveSidebarWord(selection,result);
+  const card = seed.files.get(saved.path)!.match(/<!-- note-digest:record:[\s\S]*?<!-- note-digest:record-end:[^\n]+\n/)![0];
+  const legacy = `<!-- note-digest:sidebar-words -->\n# 侧栏学习笔记\n\n<!-- note-digest:group:word -->\n### 单词\n\n${card}\n<!-- note-digest:end:word -->\n`;
+  const f = fixture();
+  const article = await f.store.save(select(),result,'word','note');
+  f.files.set(SIDEBAR_NOTE_PATH,legacy + '\n我的手工备注\n');
+  const first = await f.store.copyLegacySidebarWords();
+  assert.equal(first?.cards,1);
+  assert.equal(first?.onlyCards,false);
+  assert.deepEqual(first?.paths,[article.targets[0].path]);
+  assert.ok(f.files.get(article.targets[0].path)!.includes(card));
+  assert.equal(f.files.get(SIDEBAR_NOTE_PATH),legacy + '\n我的手工备注\n');
+  f.files.set(SIDEBAR_NOTE_PATH,legacy);
+  const restarted = new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.equal((await restarted.copyLegacySidebarWords())?.onlyCards,true);
+  assert.equal(f.files.get(article.targets[0].path)!.split(card).length,2);
+  assert.equal((await restarted.saveSidebarWord(selection,result)).duplicate,true);
+});
+
+test('article and sidebar saves reuse a renamed sidebar-only word note', async () => {
+  const f = fixture();
+  const saved = await f.store.saveSidebarWord(sidebarWord('A compelling story.'), result);
+  const renamed = 'Moved/Compelling.md';
+  f.files.set(renamed, f.files.get(saved.path)!);
+  f.files.delete(saved.path);
+  await f.store.rename(saved.path,renamed);
+  const restarted = new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.ok(restarted.isLearningNote(renamed));
+  assert.equal((await restarted.save(select(),result,'word','note')).targets[0].path,renamed);
+  assert.equal((await restarted.saveSidebarWord(sidebarWord('A compelling example.'), result)).path,renamed);
 });
 
 test('both targets retain full explanation, source body and saved identity', async () => {

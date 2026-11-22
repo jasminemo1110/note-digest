@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import { articleFinished, articlePartIsLocated, MAX_SECTIONS, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
-import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget, type SaveUndo } from './collection';
+import type { Kind, SaveTarget, SaveUndo } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
@@ -197,10 +197,11 @@ export class DigestView extends ItemView {
   private renderSidebarSave(selection: SidebarSelection, result: DigestResult): void {
     const section = this.contentEl.createDiv({cls:'note-digest-save'});
     const actions = section.createDiv({cls:'note-digest-actions'});
-    const save = actions.createEl('button', {text:'收藏到独立学习笔记', cls:'mod-cta'});
+    const save = actions.createEl('button', {text:'收藏到单词笔记', cls:'mod-cta'});
     let open: HTMLButtonElement | undefined;
     const status = section.createEl('p', {cls:'note-digest-result', attr:{role:'status','aria-live':'polite'}});
     save.onclick = async () => {
+      if (save.disabled) return;
       save.disabled = true;
       status.textContent = '正在收藏…';
       status.classList.remove('note-digest-save-duplicate');
@@ -208,10 +209,8 @@ export class DigestView extends ItemView {
         const feedback = await this.plugin.collection.saveSidebarWord(selection, result);
         status.textContent = feedback.text;
         status.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
-        if (!open) {
-          open = actions.createEl('button', {text:'打开侧栏学习笔记'});
-          open.onclick = () => { void this.app.workspace.openLinkText(SIDEBAR_NOTE_PATH, '', false); };
-        }
+        open ??= actions.createEl('button', {text:'打开单词笔记'});
+        open.onclick = () => { void this.app.workspace.openLinkText(feedback.path, '', false); };
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : '收藏失败，请重试。';
       } finally {
