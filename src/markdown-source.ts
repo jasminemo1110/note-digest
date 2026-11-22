@@ -83,8 +83,10 @@ function rawPoint(source: string, node: Text, point: number): number | undefined
   if (point === node.value.length) return end;
   const raw = source.slice(start, end);
   if (raw === node.value) return start + point;
+  const prefix = node.value.slice(0, point);
+  if (!/[&\\]$/.test(prefix) && raw.startsWith(prefix)) return start + point;
   if (normalized(raw) !== normalized(node.value)) return;
-  const length = normalized(node.value.slice(0, point)).length;
+  const length = normalized(prefix).length;
   let count = 0;
   for (const match of raw.matchAll(/[ \t\r\n]+|[^ \t\r\n]/g)) {
     if (++count === length) return start + match.index + match[0].length;
@@ -238,11 +240,14 @@ function inlineTarget(source: string, children: PhrasingContent[], selection: So
       const raw = source.slice(bounds.start, bounds.end);
       const offset = selection.end - bounds.start;
       if (/https?:\/\/|www\./i.test(raw)) return;
+      const prefix = raw.slice(0, offset);
       let textOffset: number | undefined;
       if (raw === node.value) textOffset = offset;
       else if (selection.end === bounds.end) textOffset = node.value.length;
+      // A previous annotation can contain Markdown escapes after the selected word.
+      else if (!/[&\\]$/.test(prefix) && node.value.startsWith(prefix)) textOffset = offset;
       else if (normalized(raw) === normalized(node.value) && !/[ \t\r\n]/.test(raw[offset - 1] ?? '')) {
-        const match = [...node.value.matchAll(/[ \t\r\n]+|[^ \t\r\n]/g)][normalized(raw.slice(0, offset)).length - 1];
+        const match = [...node.value.matchAll(/[ \t\r\n]+|[^ \t\r\n]/g)][normalized(prefix).length - 1];
         if (match) textOffset = match.index + match[0].length;
       }
       if (textOffset !== undefined) {

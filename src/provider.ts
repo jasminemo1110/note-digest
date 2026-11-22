@@ -3,7 +3,19 @@ import { articleTranslationParagraphs, MAX_SECTIONS, sectionSource, type Article
 import type { ResultRequest } from './result-cache';
 import type { ParagraphTranslation } from './reading-layout';
 export type Transport = (request: RequestUrlParam) => Promise<Pick<RequestUrlResponse, 'status' | 'json'>>;
-import { MAX_COMMON_USAGES, validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
+import { isEnglishWord, MAX_COMMON_USAGES, validateResult, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SourceLanguage } from './core';
+
+function validateWordPronunciation(value: unknown): DigestResult['wordPronunciation'] {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('AI 音标字段异常。');
+  const {uk, us} = value as Record<string, unknown>;
+  const ipa = (variant: unknown) => {
+    if (typeof variant !== 'string' || variant.length > 120 || !/^\/[^/\p{C}]+\/$/u.test(variant.trim()) ||
+        !variant.trim().slice(1, -1).trim()) throw new Error('AI 音标字段异常。');
+    return variant.trim().normalize('NFC');
+  };
+  return {uk:ipa(uk), us:ipa(us)};
+}
 
 export function languageInstruction(language: SourceLanguage): string {
   if (language !== 'en') throw new Error('日语将在第二版提供。');
@@ -31,12 +43,20 @@ Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, 
   const meaningRule = action === 'explain'
     ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the word or expression being explained.'
     : '';
+  const wordTranslation = action === 'translate' && isEnglishWord(selection.text);
+  const wordTranslationRules = wordTranslation ?
+    ' Keep the Chinese gloss on a single line. ' +
+    'Also return wordPronunciation as an object with uk and us, each a single IPA transcription surrounded by slashes. ' +
+    'Transcribe the exact selected word form in its contextual sense. Use standard UK and US pronunciations with the same ' +
+    'transcription conventions, and give identical strings when the pronunciations are the same. ' +
+    'Set wordPronunciation to null when you cannot reliably transcribe the word.' : '';
   return requestJson(key, requestUrl, languageInstruction('en') +
-    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules +
+    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules +
     ' When selectionOffset is supplied, it identifies the exact occurrence of selected in context (zero-based UTF-16 offset).',
     {selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
       const result = validateResult(value, action);
       if (action === 'explain' && result.headword === undefined) throw new Error('AI 未返回词头。');
+      if (wordTranslation) result.wordPronunciation = validateWordPronunciation((value as Record<string, unknown>).wordPronunciation);
       return result;
     }, options);
 }

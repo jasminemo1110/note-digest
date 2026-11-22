@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
-import {readingSnapshot,snapshot,type DigestResult} from '../src/core';
+import {readingSnapshot,snapshot,translationInsertion,type DigestResult} from '../src/core';
+import {proseText} from '../src/markdown-source';
 import {planArticleSummary,sectionAt,selectDigestBatch} from '../src/article-summary';
 import {changeSectionTranslation} from '../src/section-translation';
 const bundled=await build({entryPoints:['src/view.ts'],bundle:true,write:false,format:'cjs',external:['obsidian'],platform:'node'});
@@ -61,12 +62,83 @@ test('toolbar precedes original; insert buttons directly follow translation; sav
   const {view,document,calls}=setup();view.render(selected,{translation:'有说服力的'});
   const toolbar=document.querySelector('.note-digest-toolbar')!;const original=document.querySelector('.note-digest-original')!;
   assert.ok(toolbar.compareDocumentPosition(original)&4);
-  assert.equal(document.querySelector('.note-digest-paragraph')?.textContent,'compelling有说服力的添加到原文下方在选区后加括号');
+  assert.equal(document.querySelector('.note-digest-word-row')?.textContent,'有说服力的在选区后加括号');
+  assert.match(document.body.textContent!,/音标暂不可用/);
+  assert.doesNotMatch(document.body.textContent!,/添加到原文下方/);
   assert.equal(document.querySelector('.note-digest-save .note-digest-insert'),null);
   assert.equal((document.querySelector('[aria-label="收藏保存位置"]') as HTMLSelectElement).value,'both');
   const save=document.querySelector('.note-digest-save button') as HTMLButtonElement;assert.equal(save.textContent,'保存');
   await save.onclick!(new (domEvent(document))('click') as any);
   assert.equal(calls[0][3],'quote');assert.equal(calls[0][4],'both');
+});
+test('word translation inserts either IPA or meaning independently at the word boundary and prevents duplicates', async () => {
+  const source = '**今日主题：生态演替与自然恢复（Ecological Succession & Natural Recovery）**\n';
+  const selection = snapshot('a.md', source, 'Natural ');
+  const translation = {translation:'自然的（自然形成） [形容词] | 天生的', wordPronunciation:{uk:'/ˈnætʃ.ər.əl/', us:'/ˈnætʃ.ɚ.əl/'}};
+  const annotations = {
+    音标:String.raw`（英 /ˈnætʃ\.ər\.əl/ · 美 /ˈnætʃ\.ɚ\.əl/）`,
+    含义:String.raw`（自然的（自然形成） \[形容词\] &#124; 天生的）`,
+  };
+
+  for (const [first, second] of [['音标','含义'], ['含义','音标']] as const) {
+    const {view,document,calls,plugin} = setup();
+    let written = source;
+    Object.assign(plugin, {insert: async (selection: Parameters<typeof translationInsertion>[1], text: string) => {
+      const receipt = translationInsertion(written, selection, text, 'inline');
+      written = receipt.after;
+      return receipt;
+    }});
+    const button = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="在选区后加括号（${label}）"]`)!;
+    const insert = async (label: string) => {
+      const control = button(label);
+      assert.equal(control.disabled, false);
+      await control.onclick!(new (domEvent(document))('click') as any);
+    };
+
+    view.render(selection, translation);
+    assert.equal(document.querySelector('.note-digest-word-translation h3')?.textContent, 'Natural');
+    assert.deepEqual([...document.querySelectorAll('.note-digest-word-row p')].map(node=>node.textContent),
+      ['英 /ˈnætʃ.ər.əl/ · 美 /ˈnætʃ.ɚ.əl/', translation.translation]);
+    assert.equal(written, source);
+    await insert(first);
+    assert.equal(written, source.replace('Natural ', 'Natural'+annotations[first]+' '));
+    assert.equal(button(first).disabled, true);
+    await insert(second);
+    assert.equal(written, source.replace('Natural ', 'Natural'+annotations[second]+annotations[first]+' '));
+    assert.equal(button(first).disabled, true);
+    assert.equal(button(second).disabled, true);
+
+    [...document.querySelectorAll('button')].find(button=>button.textContent==='重新生成')!.click();
+    const [, regenerated, mode, force] = calls.at(-1);
+    assert.equal(regenerated.source, written);
+    assert.equal(regenerated.text, 'Natural');
+    assert.equal(regenerated.context, selection.context);
+    assert.equal(mode, 'translate');
+    assert.equal(force, true);
+
+    const paragraph = proseText(written);
+    const reopened = readingSnapshot('a.md', written, 'Natural', {
+      section:{lineStart:0,lineEnd:0,text:written},
+      paragraph, offset:paragraph.indexOf('Natural'), tag:'p',
+    });
+    assert.equal(reopened.start, written.indexOf('Natural'));
+    view.render(reopened, translation);
+    assert.match(button(first).title, /已包含/);
+    assert.match(button(second).title, /已包含/);
+  }
+});
+
+test('shared UK and US IPA is shown once, and phrase translation keeps the existing controls', () => {
+  const {view,document} = setup();
+  view.render(selected, {translation:'有说服力的', wordPronunciation:{uk:'/kəmˈpelɪŋ/', us:'/kəmˈpelɪŋ/'}});
+  assert.equal(document.querySelector('.note-digest-word-row p')?.textContent, '/kəmˈpelɪŋ/');
+  assert.equal(document.querySelectorAll('.note-digest-word-row button').length, 2);
+
+  const phrase = snapshot('a.md', 'A compelling argument.', 'compelling argument');
+  view.render(phrase, {translation:'有说服力的论点'});
+  assert.equal(document.querySelector('.note-digest-word-row'), null);
+  assert.deepEqual([...document.querySelectorAll('.note-digest-insert button')].map(button=>button.textContent),
+    ['添加到原文下方', '在选区后加括号']);
 });
 function domEvent(document:Document):typeof Event{return document.defaultView!.Event;}
 test('explanation hides insertion and natural assessment but still saves a full word card',()=>{
@@ -266,7 +338,6 @@ test('inactive retained card exposes independent delete button and invokes only 
 });
 
 test('insert then explain uses updated source and original English context without another Digest',async()=>{
-  const {translationInsertion}=await import('../src/core');
   const {view,document,calls,plugin}=setup();
   (plugin as any).insert=async(selection:any,translation:string,mode:any)=>translationInsertion(selection.source,selection,translation,mode);
   view.render(selected,{translation:'有说服力的'});
@@ -287,7 +358,6 @@ test('failed insertion leaves original selection usable and restores controls',a
   assert.equal(explain.disabled,false);explain.click();assert.equal(calls[0][1].source,selected.source);
 });
 test('late insertion response cannot replace a newer selected word in the sidebar',async()=>{
-  const {translationInsertion}=await import('../src/core');
   const {view,document,calls,plugin}=setup();let finish:(value:any)=>void=()=>{};
   (plugin as any).insert=()=>new Promise(resolve=>{finish=resolve;});
   view.render(selected,{translation:'有说服力的'});

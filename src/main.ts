@@ -604,7 +604,7 @@ export default class NoteDigestPlugin extends Plugin {
       });
       if (!receipt || await this.app.vault.read(file) !== receipt.after) throw new Error('插入后原文又有变化，请重新选择。');
       this.generation++;
-      new Notice('译文已添加到原文。');
+      new Notice('已添加到原文。');
       return receipt;
     } catch (error) { new Notice(error instanceof Error ? error.message : '写入失败。'); }
   }

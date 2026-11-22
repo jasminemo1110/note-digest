@@ -12,10 +12,30 @@ test('temporary request includes bounded context and only returns validated fiel
     assert.equal(body.model, 'deepseek-flash');
     assert.match(body.messages[0].content, /"translation" field must be a Simplified Chinese equivalent of the exact text in "selected"/);
     assert.match(body.messages[0].content, /Use "context" only to choose the intended sense/);
+    assert.match(body.messages[0].content, /wordPronunciation as an object with uk and us/);
     assert.deepEqual(JSON.parse(body.messages[1].content), {selected: selected.text, context: selected.context});
-    return { status: 200, json: {choices: [{finish_reason: 'stop', message: {content: '{"translation":"有说服力的"}'}}]} };
+    return { status: 200, json: {choices: [{finish_reason: 'stop', message: {content: '{"translation":"有说服力的","wordPronunciation":{"uk":"/kəmˈpelɪŋ/","us":"/kəmˈpelɪŋ/"}}'}}]} };
   };
-  assert.deepEqual(await digest(selected, 'translate', credential, transport), {translation:'有说服力的'});
+  assert.deepEqual(await digest(selected, 'translate', credential, transport), {
+    translation:'有说服力的', wordPronunciation:{uk:'/kəmˈpelɪŋ/', us:'/kəmˈpelɪŋ/'},
+  });
+});
+
+test('IPA is requested only for a single word and validated before being shown or cached', async () => {
+  const natural = snapshot('a.md', 'Natural recovery', 'Natural ');
+  const phrase = snapshot('a.md', 'Natural recovery', 'Natural recovery');
+  const response = (wordPronunciation: unknown): Awaited<ReturnType<Transport>> => ({
+    status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify({translation:'自然恢复', wordPronunciation})}}]},
+  });
+  for (const invalid of [{uk:'/ˈnætʃərəl/', us:[]}, {uk:'/ /', us:'/ˈnætʃərəl/'}, {uk:'/a\nb/', us:'/c/'}]) {
+    await assert.rejects(digest(natural, 'translate', credential, async () => response(invalid)), /AI 返回格式异常/);
+  }
+  assert.deepEqual(await digest(natural, 'translate', credential, async () => response(null)),
+    {translation:'自然恢复', wordPronunciation:null});
+  assert.deepEqual(await digest(phrase, 'translate', credential, async request => {
+    assert.doesNotMatch(JSON.parse(request.body as string).messages[0].content, /wordPronunciation/);
+    return response(null);
+  }), {translation:'自然恢复'});
 });
 test('missing secret prevents any network request', async () => {
   await assert.rejects(digest(selected, 'translate', '', async () => { throw new Error('must not execute'); }), /设置/);

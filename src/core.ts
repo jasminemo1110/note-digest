@@ -31,7 +31,12 @@ export interface DigestResult {
   headword?: string | null;
   commonUsages?: CommonUsage[];
   pronunciation?: string | null; assessment?: ExpressionAssessment;
+  wordPronunciation?: {uk: string; us: string} | null;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
+}
+
+export function isEnglishWord(text: string): boolean {
+  return /^\p{Script=Latin}+(?:['’-]\p{Script=Latin}+)*$/u.test(text.trim().normalize('NFC'));
 }
 
 function validateUsageText(value: unknown, maxLength: number): string {
@@ -142,6 +147,20 @@ export function insertTranslation(current: string, selection: SelectionSnapshot,
 }
 
 export interface InsertionReceipt { path: string; before: string; after: string; offset: number; length: number }
+
+function hasInlineAnnotation(source: string, offset: number, annotation: string): boolean {
+  let depth = 0;
+  for (let cursor = offset; source[cursor] && !/[\r\n]/.test(source[cursor]); cursor++) {
+    if (depth === 0) {
+      if (source[cursor] !== '（') break;
+      if (source.startsWith(annotation, cursor)) return true;
+    }
+    if (source[cursor] === '（') depth++;
+    if (source[cursor] === '）') depth--;
+  }
+  return false;
+}
+
 /** A receipt describes only the exact insertion that passed the atomic source check. */
 export function translationInsertion(current: string, selection: SelectionSnapshot, translation: string, mode: 'below'|'inline'): InsertionReceipt {
   if (current !== selection.source) throw new Error('原文已修改，请重新选择并生成，避免插错位置。');
@@ -158,9 +177,9 @@ export function translationInsertion(current: string, selection: SelectionSnapsh
   const safe = escapeMarkdown(plain).replace(/[%$^:]/g, char => '&#' + char.charCodeAt(0) + ';');
   let insertion: string;
   if (mode === 'inline') {
-    if (/[\r\n]/.test(plain)) throw new Error('多行译文请使用下方插入。');
-    insertion = '（' + safe + '）';
-    if (current.startsWith(insertion, offset)) throw new Error('原文已包含这段括号译文。');
+    if (/[\r\n]/.test(plain)) throw new Error('多行内容无法加到同一对括号里。');
+    insertion = '（' + safe.replace(/\\\|/g, '&#124;') + '）';
+    if (hasInlineAnnotation(current, offset, insertion)) throw new Error('原文已包含这条括号标注。');
     if (!('apply' in target)) throw new Error('无法安全插入括号译文。');
     target.apply('（' + plain + '）');
   } else {

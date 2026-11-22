@@ -7,7 +7,7 @@ import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment, type ParagraphTranslation } from './reading-layout';
 import { savedSectionTranslation } from './section-translation';
-import { explanationHeadword, canCollectSelection, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, isEnglishWord, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -91,7 +91,9 @@ export class DigestView extends ItemView {
       this.claudianContexts.set(summary, {source:selection.text});
       return;
     }
-    if (mode === 'translate') {
+    if (mode === 'translate' && !result.paragraphs && isEnglishWord(selection.text)) {
+      this.renderWordTranslation(el, selection, result, revision);
+    } else if (mode === 'translate') {
       const paragraphs = result.paragraphs ?? [{source:selection.text,translation:result.translation}];
       for (const paragraph of paragraphs) {
         const pair = el.createDiv({cls:'note-digest-paragraph'});
@@ -146,6 +148,51 @@ export class DigestView extends ItemView {
     } else if ('sidebar' in selection && mode === 'explain') {
       this.renderSidebarSave(selection, result);
     }
+  }
+  private renderWordTranslation(el: HTMLElement, selection: DigestSelection, result: DigestResult, revision: number): void {
+    const word = selection.text.trim();
+    const lookup = el.createDiv({cls:'note-digest-word-translation'});
+    const context = {source:this.sourceContext(selection)};
+    const original = lookup.createEl('h3', {text:word, cls:'note-digest-original'});
+    this.claudianContexts.set(original, context);
+    let target: SelectionSnapshot | undefined;
+    if ('path' in selection) {
+      const raw = selection.source.slice(selection.start, selection.end);
+      if (raw.trim() === word) {
+        const start = selection.start + raw.length - raw.trimStart().length;
+        const contextOffset = selection.contextOffset === undefined ? undefined :
+          selection.contextOffset + selection.text.length - selection.text.trimStart().length;
+        target = {...selection, text:word, start, end:start + word.length, contextOffset};
+      } else {
+        target = {...selection, readOnly:true};
+      }
+    }
+    const renderRow = (label: string, text: string) => {
+      const row = lookup.createDiv({cls:'note-digest-word-row'});
+      const value = row.createEl('p', {text, cls:'note-digest-result', attr:{'aria-label':label}});
+      this.claudianContexts.set(value, context);
+      const range = target;
+      if (!range) return;
+      const button = row.createEl('button', {text:'在选区后加括号', attr:{'aria-label':`在选区后加括号（${label}）`}});
+      try { translationInsertion(range.source, range, text, 'inline'); }
+      catch (error) {
+        button.disabled = true;
+        if (error instanceof Error) button.title = error.message;
+        return;
+      }
+      this.bindInsertion(button, range, text, 'inline', revision, receipt => {
+        const updated = rebaseSelectionAfterInsertion(range, receipt);
+        this.render(updated ?? range, result, updated ? `已添加${label}。` : `已添加${label}，请重新选择原词后继续。`, 'translate');
+      });
+    };
+    const pronunciation = result.wordPronunciation;
+    if (pronunciation) {
+      const {uk, us} = pronunciation;
+      renderRow('音标', uk === us ? uk : `英 ${uk} · 美 ${us}`);
+    } else {
+      lookup.createEl('p', {text:'音标暂不可用', cls:'note-digest-muted'});
+    }
+    renderRow('含义', result.translation);
   }
   private renderSidebarSave(selection: SidebarSelection, result: DigestResult): void {
     const section = this.contentEl.createDiv({cls:'note-digest-save'});
@@ -366,19 +413,24 @@ export class DigestView extends ItemView {
       try { translationInsertion(selection.source, selection, translation, mode); }
       catch { continue; }
       writes ??= parent.createDiv({cls:'note-digest-actions note-digest-insert'});
-      const button=writes.createEl('button',{text:label});
-      button.onclick=async()=>{
-        const controls=Array.from(this.contentEl.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select'));
-        const previous=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);
-        try {
-          const receipt=await this.plugin.insert(selection,translation,mode);
-          if(receipt && revision===this.renderRevision) onInserted(receipt);
-        } finally {
-          if(revision===this.renderRevision) controls.forEach((control,index)=>control.disabled=previous[index]);
-        }
-      };
+      const button = writes.createEl('button', {text:label});
+      this.bindInsertion(button, selection, translation, mode, revision, onInserted);
     }
     if (!writes) parent.createEl('p',{text:'无法安全插入，译文保留在侧栏。',cls:'note-digest-muted'});
+  }
+  private bindInsertion(button: HTMLButtonElement, selection: SelectionSnapshot, text: string, mode: 'below' | 'inline',
+    revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
+    button.onclick = async () => {
+      if (button.disabled || revision !== this.renderRevision) return;
+      const controls = [...this.contentEl.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(:disabled), select:not(:disabled)')];
+      controls.forEach(control => { control.disabled = true; });
+      try {
+        const receipt = await this.plugin.insert(selection, text, mode);
+        if (receipt && revision === this.renderRevision) onInserted(receipt);
+      } finally {
+        if (revision === this.renderRevision) controls.forEach(control => { control.disabled = false; });
+      }
+    };
   }
   private renderSave(selection: SelectionSnapshot, result: DigestResult, mode: Action): void {
     const located = canCollectSelection(selection);
