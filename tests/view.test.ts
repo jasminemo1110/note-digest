@@ -234,24 +234,28 @@ test('full summary is reachable without selecting text and partial results offer
   assert.deepEqual(calls, [['summarize'], ['locate', article, article.parts[0]], ['stop'], ['retry', article]]);
 });
 
-test('full Digest comes first and the short actions capture live text with the remembered selection as fallback', () => {
+test('short actions come first in both selection and Digest views and use the remembered selection as fallback', () => {
   const {view, document, calls} = setup();
   const toolbarButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>('.note-digest-toolbar button'));
+  const order = ['翻译', '语境解释', 'Digest 全文', 'Digest 选中段落'];
   view.render(selected, explained);
-  toolbarButtons()[0].click();
+  assert.deepEqual(toolbarButtons().map(button => button.textContent), order);
+  assert.equal(toolbarButtons()[1].getAttribute('aria-pressed'), 'true');
+  toolbarButtons()[2].click();
+  assert.deepEqual(calls.at(-1), ['summarize']);
   view.renderArticleSummary(selected.path, undefined, '正在读取正文…', true);
-  assert.deepEqual(toolbarButtons().map(button => button.textContent), ['Digest 全文', 'Digest 选中段落', '翻译', '语境解释']);
-  assert.equal(toolbarButtons()[0].getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(toolbarButtons().map(button => button.textContent), order);
+  assert.equal(toolbarButtons()[2].getAttribute('aria-pressed'), 'true');
   const down = new document.defaultView!.MouseEvent('mousedown', {bubbles:true, cancelable:true});
-  toolbarButtons()[3].dispatchEvent(down);
+  toolbarButtons()[1].dispatchEvent(down);
   assert.ok(down.defaultPrevented);
-  toolbarButtons()[3].click();
-  assert.deepEqual(calls.at(-1), ['run', selected, 'explain']);
   toolbarButtons()[1].click();
+  assert.deepEqual(calls.at(-1), ['run', selected, 'explain']);
+  toolbarButtons()[3].click();
   assert.deepEqual(calls.at(-1), ['summarizeSelection', selected]);
 
   view.renderArticleSummary('other.md', undefined, '正在读取正文…', true);
-  toolbarButtons()[2].click();
+  toolbarButtons()[0].click();
   assert.deepEqual(calls.at(-1), ['run', undefined, 'translate']);
 });
 

@@ -53,10 +53,10 @@ export class DigestView extends ItemView {
   private renderToolbar(el: HTMLElement, mode?: Action | 'idle' | 'full'): void {
     const actions = el.createDiv({cls:'note-digest-actions note-digest-toolbar', attr:{'aria-label':'阅读操作'}});
     const choices = [
-      ['Digest 全文', 'full', () => this.plugin.summarizeCurrentArticle()],
-      ['Digest 选中段落', 'summarize', () => this.plugin.summarizeSelection(this.selectionView)],
       ['翻译', 'translate', () => this.plugin.runSelectionAction('translate', this.selectionView)],
       ['语境解释', 'explain', () => this.plugin.runSelectionAction('explain', this.selectionView)],
+      ['Digest 全文', 'full', () => this.plugin.summarizeCurrentArticle()],
+      ['Digest 选中段落', 'summarize', () => this.plugin.summarizeSelection(this.selectionView)],
     ] as const;
     for (const [label, action, run] of choices) {
       const button = actions.createEl('button', {text:label, attr:{'aria-pressed':String(action === mode)}});
