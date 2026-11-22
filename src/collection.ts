@@ -117,6 +117,12 @@ function commonUsagesMarkdown(result: DigestResult): string {
     `- **${safe(partOfSpeech)} · ${safe(meaning)}** — ${safe(example)}`);
   return '\n\n**其他常见用法**\n\n' + items.join('\n');
 }
+function wordFamilyMarkdown(result: DigestResult): string {
+  if (!result.wordFamily?.length) return '';
+  const safe = (value: string) => escapeMarkdown(value).replace(/[%$^:]/g, char => `&#${char.charCodeAt(0)};`);
+  const words = result.wordFamily.map(({word, partOfSpeech, meaning}) => `- **${safe(word)}** · ${safe(partOfSpeech)} · ${safe(meaning)}`);
+  return '\n\n**同族词**\n\n' + words.join('\n');
+}
 function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
 }
@@ -196,7 +202,7 @@ function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = fals
       if (result.assessment.correction) text += `\n\n**${result.assessment.status === 'informal' ? '更正式的表达（可选）' : '建议改法'}**\n\n${quoted(result.assessment.correction)}`;
     }
   }
-  return text + commonUsagesMarkdown(result) + '\n';
+  return text + commonUsagesMarkdown(result) + wordFamilyMarkdown(result) + '\n';
 }
 export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): string {
   return markedCardMarkdown(record);

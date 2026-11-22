@@ -90,6 +90,16 @@ test('supplementary usages validate as a bounded list of short text fields', () 
     assert.throws(() => validateResult({...base,commonUsages},'explain'),/常见用法/);
   }
 });
+test('word family validates distinct related headwords and keeps older explanations readable', () => {
+  const base = {headword:'confirmation',translation:'确认',meaning:'含义',usage:'用法',example:'例句',pronunciation:null,
+    assessment:{status:'natural',explanation:'自然',correction:null}};
+  const related = {word:'confirm',partOfSpeech:'动词',meaning:'确认；证实'};
+  const wordFamily = [related, {...related,word:'Confirm'}, {...related,word:'confirmation'}];
+  assert.deepEqual(validateResult({...base,wordFamily},'explain').wordFamily,[related]);
+  assert.deepEqual(validateResult({...base,headword:null,wordFamily},'explain').wordFamily,[]);
+  assert.equal(validateResult(base,'explain').wordFamily,undefined);
+  assert.throws(() => validateResult({...base,wordFamily:[{...related,word:'confirm\n# separate'}]},'explain'), /同族词/);
+});
 test('edited source refuses write even if selected word still exists', () => {
   const s = snapshot('a.md', 'A word.', 'word');
   assert.throws(() => insertTranslation('A word. Changed.', s, '词', 'below'), /原文已修改/);

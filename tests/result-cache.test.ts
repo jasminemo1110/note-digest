@@ -49,7 +49,7 @@ test('cache keeps identical words in different contexts and explanation separate
     const selected = JSON.parse(payload.messages[1].content);
     return response(payload.messages[0].content.includes('Also return headword')
       ? {translation:'正确', headword:'right', meaning:'合乎事实', usage:'be right', example:'You are right. 你说对了',
-        pronunciation:null, assessment:{status:'natural', explanation:'自然', correction:null}}
+        pronunciation:null, wordFamily:[], assessment:{status:'natural', explanation:'自然', correction:null}}
       : {translation: selected.selectionOffset === 0 ? '正确' : '右边'});
   };
   const first = {text:'right', context:'right, turn right', contextOffset:0};

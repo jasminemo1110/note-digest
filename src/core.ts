@@ -21,15 +21,18 @@ export interface ExpressionAssessment {
   correction: string | null;
 }
 export const MAX_COMMON_USAGES = 3;
+export const MAX_WORD_FAMILY = 4;
 export interface CommonUsage {
   partOfSpeech: string;
   meaning: string;
   example: string;
 }
+export interface WordFamilyEntry { word: string; partOfSpeech: string; meaning: string }
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
   headword?: string | null;
   commonUsages?: CommonUsage[];
+  wordFamily?: WordFamilyEntry[];
   pronunciation?: string | null; assessment?: ExpressionAssessment;
   wordPronunciation?: {uk: string; us: string} | null;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
@@ -39,9 +42,9 @@ export function isEnglishWord(text: string): boolean {
   return /^\p{Script=Latin}+(?:['’-]\p{Script=Latin}+)*$/u.test(text.trim().normalize('NFC'));
 }
 
-function validateUsageText(value: unknown, maxLength: number): string {
+function validateUsageText(value: unknown, maxLength: number, label = '常见用法'): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maxLength || /[\r\n\0]/.test(value)) {
-    throw new Error('AI 常见用法字段异常。');
+    throw new Error(`AI ${label}字段异常。`);
   }
   return value.trim();
 }
@@ -117,6 +120,21 @@ export function validateResult(value: unknown, action: Action): DigestResult {
           example: validateUsageText(example, 300),
         };
       });
+    }
+    if (input.wordFamily !== undefined) {
+      if (!Array.isArray(input.wordFamily) || input.wordFamily.length > MAX_WORD_FAMILY) throw new Error('AI 同族词列表异常。');
+      const seen = new Set([validated.headword?.toLowerCase()]);
+      validated.wordFamily = [];
+      for (const entry of input.wordFamily) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('AI 同族词字段异常。');
+        const word = validateUsageText(entry.word, 80, '同族词');
+        if (!isEnglishWord(word)) throw new Error('AI 同族词拼写字段异常。');
+        const partOfSpeech = validateUsageText(entry.partOfSpeech, 30, '同族词');
+        const meaning = validateUsageText(entry.meaning, 100, '同族词');
+        const key = word.toLowerCase();
+        if (!seen.has(key) && validated.headword !== null) validated.wordFamily.push({word, partOfSpeech, meaning});
+        seen.add(key);
+      }
     }
     const pronunciation = input.pronunciation;
     if (pronunciation !== null && (typeof pronunciation !== 'string' || !pronunciation.trim() || pronunciation.length > 500)) throw new Error('AI 音标字段异常。');

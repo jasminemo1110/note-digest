@@ -57,13 +57,16 @@ test('Japanese interface is reserved but not enabled', () => {
 });
 
 test('explanation request asks for IPA and distinguishes errors from register; results stay structured', async () => {
-  const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null}};
+  const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null},
+    wordFamily:[{word:'compel',partOfSpeech:'动词',meaning:'迫使'}]};
   const transport: Transport = async request => {
     const prompt = JSON.parse(request.body as string).messages[0].content;
     assert.match(prompt, /IPA/); assert.match(prompt, /informal/); assert.match(prompt, /uncertain/);
     assert.match(prompt, /Do not silently replace/);
     assert.match(prompt, /"translation" field must be a concise Simplified Chinese equivalent of the headword/);
     assert.match(prompt, /Put contextual elaboration in "meaning"/);
+    assert.match(prompt, /Return wordFamily/);
+    assert.match(prompt, /Exclude inflections, spelling variants, synonyms/);
     return {status:200, json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(explanation)}}]}};
   };
   assert.deepEqual(await digest(selected, 'explain', credential, transport), explanation);
@@ -72,7 +75,8 @@ test('explanation request asks for IPA and distinguishes errors from register; r
 test('inflected lookup teaches the base headword without changing the quoted source payload', async () => {
   const selection = snapshot('a.md', 'Interpreting Research Findings', 'Interpreting');
   const explanation = {headword:'interpret', translation:'解读；解释', meaning:'interpret 表示解读。原文 Interpreting 是其 -ing 形式，用于标题。', usage:'interpret findings 解读研究结果', example:'We interpret the data. 我们解读数据。', pronunciation:'/ɪnˈtɜːprɪt/', assessment:{status:'natural', explanation:'标题用法自然。', correction:null},
-    commonUsages:[{partOfSpeech:'动词',meaning:'口译',example:'interpret for a guest（为一位客人口译）'}]};
+    commonUsages:[{partOfSpeech:'动词',meaning:'口译',example:'interpret for a guest（为一位客人口译）'}],
+    wordFamily:[{word:'interpretation',partOfSpeech:'名词',meaning:'解释；理解'}]};
   const response = await digest(selection, 'explain', credential, async request => {
     const body = JSON.parse(request.body as string);
     const prompt = body.messages[0].content;

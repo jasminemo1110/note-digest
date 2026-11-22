@@ -140,6 +140,13 @@ export class DigestView extends ItemView {
           item.createEl('div', {text:example});
         }
       }
+      if (result.wordFamily?.length) {
+        explanation.createEl('h3', {text:'同族词'});
+        const family = explanation.createEl('ul');
+        for (const {word, partOfSpeech, meaning} of result.wordFamily) {
+          family.createEl('li', {text:`${word} · ${partOfSpeech} · ${meaning}`, cls:'note-digest-result'});
+        }
+      }
     }
     this.regenerateSelection(el, selection, mode);
     if (article) {
