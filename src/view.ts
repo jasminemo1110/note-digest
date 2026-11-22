@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import { articleFinished, articlePartIsLocated, MAX_SECTIONS, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
-import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget } from './collection';
+import { SIDEBAR_NOTE_PATH, type Kind, type SaveTarget, type SaveUndo } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
@@ -454,20 +454,46 @@ export class DigestView extends ItemView {
       kind.createEl('option',{value:'quote',text:'金句与译文'});
     }
     const save=el.createEl('button',{text:'保存',cls:'mod-cta'});
-    const message=el.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+    const feedbackArea=el.createDiv({cls:'note-digest-save-feedback'});
+    const message=feedbackArea.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+    const undo=feedbackArea.createEl('button',{text:'撤销',attr:{'aria-label':'撤销本次保存'}});
+    let receipt: SaveUndo | undefined;
+    const setUndo = (next?: SaveUndo) => { receipt = next; undo.hidden = !next; };
+    setUndo();
     let refreshUpdate = () => {};
+    const refreshCollection = () => {
+      if (el.isConnected) { this.renderCollection(selection.path); refreshUpdate(); }
+    };
     save.onclick=async()=>{
+      if (save.disabled) return;
+      setUndo();
       save.disabled=true;message.textContent='正在保存…';
       message.classList.remove('note-digest-save-duplicate');
       try {
         const feedback = await this.plugin.collect(selection,result,(kind?.value ?? 'quote') as Kind,target.value as SaveTarget);
         message.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
         message.textContent = feedback.text;
+        setUndo(feedback.undo);
       }
       catch(error) { message.textContent=error instanceof Error ? error.message : '保存失败，请重试。'; }
       finally {
         save.disabled=false;
-        if (message.isConnected) { this.renderCollection(selection.path); refreshUpdate(); }
+        refreshCollection();
+      }
+    };
+    undo.onclick=async()=>{
+      if (!receipt || save.disabled) return;
+      save.disabled = undo.disabled = true;
+      message.textContent = '正在撤销…';
+      try {
+        const report = await this.plugin.undoCollectionSave(receipt);
+        message.textContent = report.text;
+        if (report.complete) setUndo();
+      } catch (error) {
+        message.textContent = error instanceof Error ? error.message : '撤销失败，请重试。';
+      } finally {
+        save.disabled = undo.disabled = false;
+        refreshCollection();
       }
     };
     if (mode === 'explain' && kind && located) {
@@ -499,6 +525,7 @@ export class DigestView extends ItemView {
         update.onclick = async () => {
           const card = selectedCard();
           if (!card || save.disabled) return;
+          setUndo();
           save.disabled = update.disabled = true;
           if (choose) choose.disabled = true;
           message.classList.remove('note-digest-save-duplicate');
@@ -509,16 +536,19 @@ export class DigestView extends ItemView {
             save.disabled = false;
             if (choose) choose.disabled = false;
             updateLabel();
-            if (message.isConnected) {
-              this.renderCollection(selection.path);
-              refreshUpdate();
-            }
+            refreshCollection();
           }
         };
       };
       refreshUpdate = () => { void showUpdate().catch(() => {}); };
       refreshUpdate();
     }
+  }
+  private showCollectionChange(path: string, text: string): void {
+    this.renderCollection(path);
+    this.contentEl.querySelector('[data-note-digest-deletion]')?.remove();
+    const notice=this.contentEl.createEl('p',{text,cls:'note-digest-result',attr:{role:'status'}});
+    notice.dataset.noteDigestDeletion='true';
   }
   private renderCollection(path: string): void {
     this.contentEl.querySelector('.note-digest-collection')?.remove();
@@ -558,18 +588,32 @@ export class DigestView extends ItemView {
           };
           remove=cancel;
         }
-        if (!record.active) row.createEl('p',{text:record.deletionPending?'删除尚未完成，可重试':'已取消高亮，学习笔记保留',cls:'note-digest-muted'});
+        if (record.pendingUndo) row.createEl('p',{text:'撤销保存尚未完成，可重试。',cls:'note-digest-muted'});
+        else if (!record.active) row.createEl('p',{text:record.deletionPending?'删除尚未完成，可重试':'已取消高亮，学习笔记保留',cls:'note-digest-muted'});
         const erase=row.createEl('button',{text:record.unlocated ? '删除学习卡片' : '取消高亮并删除笔记'});
         const message=row.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+        if (record.pendingUndo) {
+          const retry=row.createEl('button',{text:'重试撤销保存'});
+          row.insertBefore(retry, erase);
+          retry.onclick=async()=>{
+            if (retry.disabled || erase.disabled) return;
+            retry.disabled=erase.disabled=true;
+            message.textContent='正在撤销…';
+            try {
+              const report=await this.plugin.undoCollectionSave(record.id);
+              if (report.complete && row.isConnected) this.showCollectionChange(path, report.text);
+              else message.textContent=report.text;
+            } catch(error) {
+              message.textContent=error instanceof Error?error.message:'撤销失败，请重试。';
+            } finally { retry.disabled=erase.disabled=false; }
+          };
+        }
         erase.onclick=async()=>{
+          if (erase.disabled) return;
           erase.disabled=true;if(remove) remove.disabled=true;message.textContent='正在检查并删除对应卡片…';
           try {
             const report=await this.plugin.removeNotes(record.id);
-            this.renderCollection(path);
-            // Keep per-target feedback visible even after the record disappears.
-            this.contentEl.querySelector('[data-note-digest-deletion]')?.remove();
-            const notice=this.contentEl.createEl('p',{text:report,cls:'note-digest-result',attr:{role:'status'}});
-            notice.dataset.noteDigestDeletion='true';
+            if (row.isConnected) this.showCollectionChange(path, report);
           } catch(error) {
             message.textContent=error instanceof Error?error.message:'删除失败，请重试';erase.disabled=false;
           }

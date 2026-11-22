@@ -430,6 +430,55 @@ test('delete removes both saved copies and highlight, preserving source and othe
   assert.equal(f.store.recordsFor(path).length,1);assert.equal(f.store.recordsFor(path,true).length,1);
   assert.equal((await f.store.removeNotes(first.record.id)).complete,true);
 });
+test('undo removes the newly saved copy and keeps an earlier copy and its highlight', async () => {
+  const f = fixture();
+  const original = await f.store.save(select(),result,'word','source');
+  const previous = f.files.get(path);
+  const added = await f.store.save(select(),result,'word','both');
+  const duplicate = await f.store.save(select(),result,'word','both');
+  assert.equal(duplicate.undo, undefined);
+  assert.equal((await f.store.undoSave(added.undo!))?.complete, true);
+  assert.equal(f.files.get(path), previous);
+  assert.ok(!f.files.get(added.targets[1].path)?.includes(`note-digest:record:${original.record.id}`));
+  assert.deepEqual(f.store.recordsFor(path).map(record => record.savedTo), [[path]]);
+  assert.equal(await f.store.undoSave(original.undo!), undefined);
+});
+test('undo retries only unfinished copies after a reload and preserves hand-edited cards', async () => {
+  const f = fixture();
+  const saved = await f.store.save(select(),result,'word','both');
+  const notePath = saved.targets[1].path;
+  const clean = f.files.get(notePath)!;
+  const edited = clean.replace('有说服力的', '我手工修改过');
+  f.files.set(notePath, edited);
+  const partial = await f.store.undoSave(saved.undo!);
+  assert.deepEqual(partial?.targets.map(target => target.ok), [true,false]);
+  assert.equal(f.files.get(notePath), edited);
+  assert.equal(f.store.recordsFor(path).length, 0);
+  assert.deepEqual(f.store.recordsFor(path,true)[0].pendingUndo?.paths, [notePath]);
+  await assert.rejects(f.store.save(select(), result, 'word', 'both'), /撤销尚未完成/);
+  f.files.set(notePath, clean);
+  const restarted = new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.equal((await restarted.undoSave(saved.record.id))?.complete, true);
+  assert.equal(restarted.recordsFor(path,true).length, 0);
+  assert.equal(articleBody(f.files.get(path)!), source);
+});
+test('undo handles fallback to an independent note and can retry after status persistence fails', async () => {
+  const f = fixture();
+  f.fail(path);
+  const saved = await f.store.save(select(),result,'word','both');
+  f.fail('');
+  const persist = f.port.persist;
+  let commits = 0;
+  f.port.persist = async data => {
+    if (++commits === 2) throw new Error('状态写入失败');
+    await persist(data);
+  };
+  await assert.rejects(f.store.undoSave(saved.undo!), /状态写入失败/);
+  assert.equal(f.files.get(path), source);
+  const restarted = new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.equal((await restarted.undoSave(saved.record.id))?.complete, true);
+  assert.equal(restarted.recordsFor(path,true).length, 0);
+});
 test('inactive retained records remain deletable; missing files are not recreated',async()=>{
   const f=fixture();const saved=await f.store.save(select(),result,'word','both');
   await f.store.deactivate(saved.record.id);assert.equal(f.store.recordsFor(path).length,0);assert.equal(f.store.recordsFor(path,true).length,1);

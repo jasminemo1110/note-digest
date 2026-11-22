@@ -5,7 +5,7 @@ import { articleFileSource, articleFinished, overviewInsertion, planArticleSumma
 import { isLongSelection, type ParagraphTranslation } from './reading-layout';
 import { DigestSettings } from './settings';
 import { DigestView, VIEW_TYPE } from './view';
-import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type StoragePort } from './collection';
+import { collectionFeedback, CollectionStore, loadCollection, type Kind, type SaveTarget, type SaveUndo, type StoragePort } from './collection';
 import { vaultStorage } from './vault-storage';
 import { applyHighlights, clearHighlights, highlightRanges, tableHighlightRanges } from './highlights';
 import { articleBody, locateAnchor, SECTION_TRANSLATION_CALLOUT, SUMMARY_CALLOUT } from './anchors';
@@ -144,10 +144,19 @@ export default class NoteDigestPlugin extends Plugin {
       if (leaf.view instanceof MarkdownView && (!path || leaf.view.file?.path === path)) leaf.view.previewMode.rerender(true);
     }
   }
-  async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget): Promise<ReturnType<typeof collectionFeedback>> {
+  async collect(selection: SelectionSnapshot, result: DigestResult, kind: Kind, target: SaveTarget) {
     const report = await this.collection.save(selection, result, kind, target);
     this.refreshHighlights(selection.path);
-    return collectionFeedback(report);
+    return {...collectionFeedback(report), undo: report.undo};
+  }
+  async undoCollectionSave(undo: SaveUndo | string): Promise<{text: string; complete: boolean}> {
+    try {
+      const report = await this.collection.undoSave(undo);
+      if (!report) return {text: '这次保存已无法撤销。', complete: true};
+      if (report.complete) return {text: '已撤销本次保存。', complete: true};
+      const details = report.targets.filter(target => !target.ok).map(target => `${target.path}：${target.message}`);
+      return {text: ['撤销尚未完成，可重试。', ...details].join('\n'), complete: false};
+    } finally { this.refreshHighlights(); }
   }
   async removeHighlight(id: string): Promise<void> {
     await this.collection.deactivate(id); this.refreshHighlights();

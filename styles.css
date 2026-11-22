@@ -21,6 +21,9 @@
 .note-digest-word-row p { margin: 0; }
 .note-digest-save { border-top: 1px solid var(--background-modifier-border); padding-top: 12px; }
 .note-digest-save label { display: block; margin: 8px 0; }
+.note-digest-save-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 8px; }
+.note-digest-save-feedback p { margin: 0; }
+.note-digest-save-feedback button[hidden] { display: none; }
 .note-digest-save-duplicate { color: var(--text-error); font-weight: 700; }
 .claudian-message-assistant > .claudian-user-msg-actions:has(.note-digest-save-claudian) {
   flex-wrap: wrap;

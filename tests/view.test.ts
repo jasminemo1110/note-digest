@@ -427,6 +427,42 @@ test('duplicate saving shows one prominent message without paths', async () => {
   const message=section.querySelector('[role="status"]')!;
   assert.equal(message.textContent,'本词已收藏');
   assert.ok(message.classList.contains('note-digest-save-duplicate'));
+  assert.equal(section.querySelector<HTMLButtonElement>('[aria-label="撤销本次保存"]')?.hidden, true);
+});
+
+test('translation and explanation show Undo next to the save status and retry the same save', async () => {
+  for (const mode of ['translate', 'explain'] as const) {
+    const {view,document,plugin,calls} = setup();
+    const receipt = {recordId:'saved', id:'this-save'};
+    plugin.collect = async (...args) => {
+      calls.push(['collect', ...args]);
+      return {text:'已保存', duplicate:false, undo:receipt};
+    };
+    let attempts = 0;
+    Object.assign(plugin, {undoCollectionSave: async (undo: unknown) => {
+      calls.push(['undo', undo]);
+      return ++attempts === 1 ? {text:'撤销尚未完成，可重试。', complete:false} : {text:'已撤销本次保存。', complete:true};
+    }});
+    view.render(selected, explained, '', mode);
+    const section = document.querySelector('.note-digest-save')!;
+    const save = section.querySelector<HTMLButtonElement>('button')!;
+    const undo = section.querySelector<HTMLButtonElement>('[aria-label="撤销本次保存"]')!;
+    const destination = section.querySelector<HTMLSelectElement>('[aria-label="收藏保存位置"]')!;
+    const message = section.querySelector('[role="status"]')!;
+    assert.equal(undo.hidden, true);
+    const event = new (domEvent(document))('click') as any;
+    await save.onclick!(event);
+    assert.equal(message.textContent, '已保存');
+    assert.equal(undo.hidden, false);
+    assert.equal(message.parentElement, undo.parentElement);
+    destination.value = 'note';
+    await undo.onclick!(event);
+    assert.equal(undo.hidden, false);
+    await undo.onclick!(event);
+    assert.deepEqual(calls.slice(1), [['undo', receipt], ['undo', receipt]]);
+    assert.equal(undo.hidden, true);
+    assert.equal(message.textContent, '已撤销本次保存。');
+  }
 });
 
 

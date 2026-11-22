@@ -9,10 +9,12 @@ export type SaveTarget = 'source' | 'note' | 'both';
 export const SIDEBAR_NOTE_PATH = 'Digest/侧栏学习笔记.md';
 const SIDEBAR_NOTE_HEADER = '<!-- note-digest:sidebar-words -->';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
+export interface SaveUndo { readonly recordId: string; readonly id: string }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
   originalContext?: string; unlocated?: true;
   result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean; pendingExplanation?: {result: DigestResult; copies: {path: string; before: string; after: string}[]};
+  pendingUndo?: {id: string; paths: string[]};
 }
 type LearningCard = Pick<LearningRecord, 'id' | 'kind' | 'anchor' | 'result' | 'originalContext'>;
 export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
@@ -22,7 +24,8 @@ export interface StoragePort {
   update(path: string, transform: (current: string | null) => string): Promise<void>;
   persist(data: CollectionData): Promise<void>;
 }
-export interface SaveReport { record: LearningRecord; targets: { path: string; ok: boolean; message: string }[] }
+export interface SaveReport { record: LearningRecord; targets: { path: string; ok: boolean; message: string }[]; undo?: SaveUndo }
+interface RemovalReport { targets: SaveReport['targets']; complete: boolean }
 export function collectionFeedback(report: SaveReport): {text: string; duplicate: boolean} {
   const failed = report.targets.filter(target => !target.ok);
   const saved = report.targets.some(target => target.ok && target.message === '已保存');
@@ -80,6 +83,11 @@ export function loadCollection(input: unknown): CollectionData {
         throw new Error('收藏更新数据损坏。');
       }
       pending.result = validateResult(pending.result, 'explain');
+    }
+    if (record.pendingUndo !== undefined) {
+      const pending = record.pendingUndo;
+      if (!pending || typeof pending.id !== 'string' || !ID.test(pending.id) || !Array.isArray(pending.paths) ||
+          !pending.paths.length || !pending.paths.every(validPath)) throw new Error('收藏撤销数据损坏。');
     }
     recordIds.add(record.id);
     record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
@@ -158,22 +166,27 @@ export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): st
 function markedCardMarkdown(record: LearningCard, context?: string): string {
   return groupedRecordMarkdown(record, false, context) + `<!-- note-digest:record-end:${record.id} -->\n`;
 }
-export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument): {text: string; removed: boolean} {
+export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument, unchanged = false): {text: string; removed: boolean} {
   const marker = `<!-- note-digest:record:${record.id} -->`;
+  const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
   const start = current.indexOf(marker);
+  if (start < 0 && unchanged && current.includes(endMarker)) throw new Error('卡片边界已改动，已保留内容。');
   if (start < 0) return {text: current, removed: false};
   if (current.indexOf(marker, start + marker.length) >= 0) throw new Error('记录标记重复，无法安全确定要删除的卡片。');
   const boundary = current.indexOf(LEARNING_BOUNDARY);
   const ownedNote = current.includes(`<!-- note-digest:document:${doc.id} -->`);
   if (!ownedNote && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length)) throw new Error('卡片不在可确认的学习笔记区域，已保留原文。');
-  const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
   const end = current.indexOf(endMarker);
   if (end >= 0) {
     if (end < start || current.indexOf(endMarker, end + endMarker.length) >= 0 ||
         /<!-- note-digest:(?:record:|group:|end:)/.test(current.slice(start + marker.length, end))) throw new Error('卡片边界损坏，已保留内容。');
     const finish = end + endMarker.length + (current[end + endMarker.length] === '\n' ? 1 : 0);
+    if (unchanged && current.slice(start, finish) !== markedCardMarkdown(record).trimStart()) {
+      throw new Error('卡片保存后有改动，已保留内容。');
+    }
     return {text: current.slice(0,start) + current.slice(finish), removed: true};
   }
+  if (unchanged) throw new Error('卡片缺少结束标记，已保留内容。');
   // Historical cards have no closing marker. Delete only exact known output, leaving manual additions untouched.
   for (const candidate of [groupedRecordMarkdown(record,true), groupedRecordMarkdown(record), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)]) {
     const index = current.indexOf(candidate);
@@ -294,6 +307,7 @@ function appendRecord(current: string, record: LearningRecord, isSource: boolean
 /** Serializes collection metadata and writes, including settings and rename events. */
 export class CollectionStore {
   private tail: Promise<unknown> = Promise.resolve();
+  private recentSave?: {receipt: SaveUndo; paths: string[]; wasActive: boolean};
   constructor(private data: CollectionData, private port: StoragePort, private uuid: () => string = () => crypto.randomUUID()) {}
   private queue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.tail.then(operation); this.tail = result.catch(() => undefined); return result;
@@ -302,7 +316,9 @@ export class CollectionStore {
   get secretName(): string { return this.data.secretName; }
   recordsFor(path: string, includeInactive = false): LearningRecord[] {
     const doc = this.data.documents.find(doc => doc.path === path);
-    return doc ? structuredClone(this.data.records.filter(record => record.documentId === doc.id && (includeInactive ? record.savedTo.length > 0 || record.deletionPending : record.active && record.savedTo.length > 0))) : [];
+    return doc ? structuredClone(this.data.records.filter(record => record.documentId === doc.id && (includeInactive
+      ? record.savedTo.length > 0 || record.deletionPending || !!record.pendingUndo
+      : record.active && record.savedTo.length > 0))) : [];
   }
   notePathFor(path: string): string | undefined { return this.data.documents.find(doc => doc.path === path)?.notePath; }
   isLearningNote(path: string): boolean { return path === SIDEBAR_NOTE_PATH || this.data.documents.some(doc => doc.notePath === path); }
@@ -329,18 +345,23 @@ export class CollectionStore {
   rename(oldPath: string, newPath: string | null): Promise<void> {
     return this.queue(async () => {
       const next = structuredClone(this.data);
+      const movePath = (path: string) => newPath !== null && (path === oldPath || path.startsWith(oldPath + '/'))
+        ? newPath + path.slice(oldPath.length) : path;
       for (const doc of next.documents) {
         if (doc.path === oldPath || doc.path?.startsWith(oldPath + '/')) doc.path = newPath === null ? null : newPath + doc.path.slice(oldPath.length);
         if (newPath !== null && (doc.notePath === oldPath || doc.notePath.startsWith(oldPath + '/'))) doc.notePath = newPath + doc.notePath.slice(oldPath.length);
       }
-      for (const record of next.records) record.savedTo = record.savedTo.map(path =>
-        newPath !== null && (path === oldPath || path.startsWith(oldPath + '/')) ? newPath + path.slice(oldPath.length) : path);
+      for (const record of next.records) {
+        record.savedTo = record.savedTo.map(movePath);
+        if (record.pendingUndo) record.pendingUndo.paths = record.pendingUndo.paths.map(movePath);
+      }
       if (newPath !== null) for (const record of next.records) {
         for (const copy of record.pendingExplanation?.copies ?? []) {
           if (copy.path === oldPath || copy.path.startsWith(oldPath + '/')) copy.path = newPath + copy.path.slice(oldPath.length);
         }
       }
       await this.commit(next);
+      if (this.recentSave) this.recentSave.paths = this.recentSave.paths.map(movePath);
     });
   }
   deactivate(id: string): Promise<void> {
@@ -350,26 +371,69 @@ export class CollectionStore {
       await this.commit(next);
     });
   }
-  removeNotes(id: string): Promise<{targets: SaveReport['targets']; complete: boolean}> {
+  private async removeCopy(path: string, record: LearningRecord, doc: SourceDocument, unchanged = false): Promise<boolean> {
+    if (await this.port.read(path) === null) return false;
+    let removed = false;
+    await this.port.update(path, current => {
+      if (current === null) throw new Error('文件已移动或删除，请重试。');
+      const result = removeSavedRecord(current, record, doc, unchanged);
+      removed = result.removed;
+      return result.text;
+    });
+    return removed;
+  }
+  undoSave(undo: SaveUndo | string): Promise<RemovalReport | undefined> {
+    return this.queue(async () => {
+      const next = structuredClone(this.data);
+      const record = next.records.find(record => record.id === (typeof undo === 'string' ? undo : undo.recordId));
+      if (!record || record.deletionPending || record.pendingExplanation) return;
+      let pending = record.pendingUndo;
+      if (pending) {
+        if (typeof undo !== 'string' && pending.id !== undo.id) return;
+      } else {
+        const saved = this.recentSave;
+        if (typeof undo === 'string' || !saved || saved.receipt !== undo) return;
+        pending = {id: undo.id, paths: saved.paths};
+        record.pendingUndo = pending;
+        record.active = record.active && saved.wasActive && record.savedTo.some(path => !saved.paths.includes(path));
+        await this.commit(next);
+        this.recentSave = undefined;
+      }
+      const doc = next.documents.find(doc => doc.id === record.documentId)!;
+      const targets: SaveReport['targets'] = [];
+      const remaining: string[] = [];
+      for (const path of new Set(pending.paths)) {
+        try {
+          await this.removeCopy(path, record, doc, true);
+          record.savedTo = record.savedTo.filter(saved => saved !== path);
+          targets.push({path, ok: true, message: '已撤销'});
+        } catch (error) {
+          remaining.push(path);
+          targets.push({path, ok: false, message: error instanceof Error ? error.message : '撤销失败，请重试。'});
+        }
+      }
+      if (remaining.length) record.pendingUndo = {...pending, paths: remaining};
+      else delete record.pendingUndo;
+      await this.commit(next);
+      return {targets, complete: remaining.length === 0};
+    });
+  }
+  removeNotes(id: string): Promise<RemovalReport> {
     return this.queue(async () => {
       const next=structuredClone(this.data);
       const record=next.records.find(record=>record.id===id);
       if (!record) throw new Error('收藏记录不存在。');
       const doc=next.documents.find(doc=>doc.id===record.documentId)!;
-      const paths=[...new Set([doc.path,doc.notePath,...record.savedTo].filter((path): path is string=>path!==null))];
+      const paths=[...new Set([doc.path,doc.notePath,...record.savedTo,...(record.pendingUndo?.paths ?? [])].filter((path): path is string=>path!==null))];
       record.active=false;record.deletionPending=true;
+      delete record.pendingUndo;
       // Durable cancellation and retry identity before modifying either note.
       await this.commit(next);
+      if (this.recentSave?.receipt.recordId === id) this.recentSave = undefined;
       const targets: SaveReport['targets']=[];
       for (const path of paths) {
         try {
-          let removed=false;
-          if (await this.port.read(path)!==null) {
-            await this.port.update(path,current=>{
-              if (current===null) throw new Error('文件已移动或删除，请重试。');
-              const result=removeSavedRecord(current,record,doc);removed=result.removed;return result.text;
-            });
-          }
+          const removed = await this.removeCopy(path, record, doc);
           record.savedTo=record.savedTo.filter(saved=>saved!==path);
           await this.commit(next);
           targets.push({path,ok:true,message:removed?'已删除对应学习卡片':'没有对应卡片，无需删除'});
@@ -410,7 +474,7 @@ export class CollectionStore {
     const doc = data.documents.find(doc => doc.path === selection.path);
     if (!doc) return [];
     const {matches} = await matchingRecords(data,selection,'word',doc);
-    return structuredClone(matches.filter(record => record.savedTo.length && !record.deletionPending));
+    return structuredClone(matches.filter(record => record.savedTo.length && !record.deletionPending && !record.pendingUndo));
   }
   updateExplanation(selection: SelectionSnapshot, id: string, input: DigestResult): Promise<string> {
     return this.queue(async () => {
@@ -418,7 +482,7 @@ export class CollectionStore {
       const doc = next.documents.find(doc => doc.path === selection.path);
       if (!doc || !canCollectSelection(selection)) throw new Error('无法确认要更新的收藏。');
       const {matches} = await matchingRecords(next,selection,'word',doc);
-      const record = matches.find(record => record.id === id && record.savedTo.length && !record.deletionPending);
+      const record = matches.find(record => record.id === id && record.savedTo.length && !record.deletionPending && !record.pendingUndo);
       if (!record) throw new Error('找不到此选区对应的单词收藏。');
       const body = articleBody(selection.source);
       const source = await this.port.read(selection.path);
@@ -456,6 +520,7 @@ export class CollectionStore {
         }))};
         await this.commit(next);
       }
+      if (this.recentSave?.receipt.recordId === id) this.recentSave = undefined;
       const failed: string[] = [];
       for (const {path,before,after} of plans) {
         try {
@@ -492,7 +557,8 @@ export class CollectionStore {
           record.anchor.text === selection.text.trim() && record.context === selection.context),
       };
       let record = matches.find(record => record.active && record.savedTo.length) ??
-        matches.find(record => record.savedTo.length) ?? matches[0];
+        matches.find(record => record.savedTo.length || record.pendingUndo) ?? matches[0];
+      const wasActive = record?.active ?? false;
       if (!record) {
         const originalContext = selection.contextOffset === undefined ? undefined :
           shortContext({block:selection.context,offset:selection.contextOffset,text:selection.text});
@@ -500,6 +566,7 @@ export class CollectionStore {
           originalContext, unlocated: located ? undefined : true,
           result, createdAt: new Date().toISOString(), active: true, savedTo: []}; next.records.push(record);
       }
+      if (record.pendingUndo) throw new Error('这条收藏的撤销尚未完成，请在「本文收藏」重试。');
       if (record.pendingExplanation) return {
         record: structuredClone(record),
         targets: [{path: selection.path, ok: true, message: '已收藏'}],
@@ -509,6 +576,7 @@ export class CollectionStore {
       await this.commit(next);
       const paths = !located || target === 'note' ? [doc.notePath] : target === 'both' ? [selection.path, doc.notePath] : [selection.path];
       const targets: SaveReport['targets'] = [];
+      const appended: string[] = [];
       for (const path of paths) {
         try {
           if (located && target === 'source' && path === doc.notePath) {
@@ -525,6 +593,7 @@ export class CollectionStore {
             existed = base.includes(`<!-- note-digest:record:${record!.id} -->`);
             return appendRecord(base, record!, isSource);
           });
+          if (!existed) appended.push(path);
           if (!record.savedTo.includes(path)) record.savedTo.push(path);
           try { await this.commit(next); } catch { throw new Error('内容已写入，但收藏状态保存失败；请重试以恢复高亮。'); }
           targets.push({path, ok: true, message: existed ? '已收藏' : '已保存'});
@@ -533,7 +602,9 @@ export class CollectionStore {
           if (path === selection.path && !record.savedTo.includes(path) && !paths.includes(doc.notePath)) paths.push(doc.notePath);
         }
       }
-      return {record: structuredClone(record), targets};
+      const undo = appended.length ? {recordId: record.id, id: this.uuid()} : undefined;
+      if (undo) this.recentSave = {receipt: undo, paths: appended, wasActive};
+      return {record: structuredClone(record), targets, ...(undo && {undo})};
     });
   }
 }
