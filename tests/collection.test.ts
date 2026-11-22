@@ -343,8 +343,12 @@ test('rename preserves document identity; cancellation preserves written notes; 
   await f.store.rename('Moved/Learning.md',null);assert.equal(f.store.recordsFor('Moved/Learning.md').length,0);
 });
 test('foreign learning note collision refuses overwrite',async()=>{
-  const f=fixture();f.files.set('Digest/文章学习/Learning--id-1.md','用户已有内容');
-  const saved=await f.store.save(select(),result,'word','note');assert.equal(saved.targets[0].ok,false);assert.equal(f.files.get('Digest/文章学习/Learning--id-1.md'),'用户已有内容');
+  const f=fixture();
+  const wordNote='Digest/单词学习/compelling.md';
+  f.files.set(wordNote,'用户已有内容');
+  const saved=await f.store.save(select(),result,'word','note');
+  assert.equal(saved.targets[0].ok,false);
+  assert.equal(f.files.get(wordNote),'用户已有内容');
 });
 test('load rejects invalid/future data instead of discarding it; legacy settings migrate',()=>{
   assert.equal(loadCollection({secretName:'name'}).secretName,'name');
@@ -403,13 +407,64 @@ test('legacy cleanup changes only exact generated cards and is repeatable',async
 test('natural usage omits advice, errors preserve correction; words and quotes have distinct groups',async()=>{
   const f=fixture();const word=await f.store.save(select(),result,'word','both');
   const card=recordMarkdown(word.record,f.durable().documents[0]);assert.ok(!card.includes('表达判断'));
-  await f.store.save(snapshot(path,source,'A compelling argument.'),{translation:'有说服力的论点'},'quote','both');
-  for(const target of word.targets){
-    const text=f.files.get(target.path)!;assert.ok(text.includes('### 单词'));assert.ok(text.includes('### 金句'));
-    const wordStart=text.indexOf('<!-- note-digest:group:word -->');const wordEnd=text.indexOf('<!-- note-digest:end:word -->');
-    assert.ok(text.indexOf('#### compelling')>wordStart && text.indexOf('#### compelling')<wordEnd);
-    assert.ok(text.indexOf('#### 金句')>wordEnd);
-  }
+  const quote=await f.store.save(snapshot(path,source,'A compelling argument.'),{translation:'有说服力的论点'},'quote','both');
+  const text=f.files.get(path)!;
+  const wordStart=text.indexOf('<!-- note-digest:group:word -->');const wordEnd=text.indexOf('<!-- note-digest:end:word -->');
+  assert.ok(text.indexOf('#### compelling')>wordStart && text.indexOf('#### compelling')<wordEnd);
+  assert.ok(text.indexOf('#### 金句')>wordEnd);
+  assert.doesNotMatch(f.files.get(word.targets[1].path)!, /### 金句/);
+  assert.doesNotMatch(f.files.get(quote.targets[1].path)!, /### 单词/);
+});
+
+test('one independent note combines distinct article contexts and undo preserves the other source', async () => {
+  const f=fixture();
+  const other='Articles/Second.md';
+  const otherSource='A compelling case study.';
+  f.files.set(other,otherSource);
+  const first=await f.store.save(select(),result,'word','note');
+  const last=await f.store.save(snapshot(other,otherSource,'compelling'),{...result, headword:'Compelling', translation:'引人入胜的'},'word','note');
+  const wordPath='Digest/单词学习/compelling.md';
+  assert.equal(first.targets[0].path,wordPath);
+  assert.equal(last.targets[0].path,wordPath);
+  const combined=f.files.get(wordPath)!;
+  assert.match(combined, /# compelling\n[\s\S]*?\[返回原文\]\(\/Articles\/Learning\.md\)[\s\S]*?\[返回原文\]\(\/Articles\/Second\.md\)[\s\S]*?#### compelling/);
+  assert.match(combined,/A compelling argument/);
+  assert.match(combined,/A compelling case study/);
+  assert.equal((await f.store.undoSave(last.undo!))?.complete,true);
+  const remaining=f.files.get(wordPath)!;
+  assert.match(remaining,/返回原文\]\(\/Articles\/Learning\.md\)/);
+  assert.doesNotMatch(remaining,/Articles\/Second\.md|case study/);
+  assert.equal(f.store.recordsFor(path).length,1);
+  assert.equal(f.store.recordsFor(other,true).length,0);
+});
+
+test('splitting a legacy note copies an edited bounded word card before removing it and resumes safely', async () => {
+  const f=fixture();
+  const saved=await f.store.save(select(),result,'word','source');
+  const data=f.durable();
+  const doc=data.documents[0];
+  const record=data.records[0];
+  delete record.wordNote;
+  record.savedTo.push(doc.notePath);
+  const oldCard=recordMarkdown(saved.record,doc).replace('**语境含义**','我的卡内补充\n\n**语境含义**');
+  const legacyHeader=`<!-- note-digest:document:${doc.id} -->\n# 旧笔记\n`;
+  const legacy=legacyHeader + oldCard + '\n卡片外的个人笔记';
+  f.files.set(doc.notePath,legacy);
+  const articleBefore=f.files.get(path);
+  const store=new CollectionStore(loadCollection(data),f.port);
+  f.fail('Digest/文章学习/');
+  const interrupted=await store.splitWordNotes();
+  assert.equal(interrupted.failures.length,1);
+  assert.equal(f.files.get(doc.notePath),legacy);
+  f.fail('');
+  const restarted=new CollectionStore(loadCollection(f.durable()),f.port);
+  assert.deepEqual(await restarted.splitWordNotes(),{moved:1,notes:1,failures:[]});
+  const word=f.files.get('Digest/单词学习/compelling.md')!;
+  assert.ok(word.includes(oldCard.trimStart()));
+  assert.equal(word.split(`<!-- note-digest:record:${record.id} -->`).length,2);
+  assert.equal(f.files.get(doc.notePath),legacyHeader + '\n\n\n卡片外的个人笔记');
+  assert.equal(f.files.get(path),articleBefore);
+  assert.deepEqual(await restarted.splitWordNotes(),{moved:0,notes:0,failures:[]});
 });
 test('group insertion preserves edited entries and refuses broken group boundaries',async()=>{
   const f=fixture();await f.store.save(select(),result,'word','source');

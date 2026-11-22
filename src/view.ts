@@ -575,6 +575,11 @@ export class DigestView extends ItemView {
         const row=list.createDiv({cls:'note-digest-saved-row'});
         row.createEl('p',{text:record.kind === 'word' ? explanationHeadword(record.anchor.text,record.result) : record.anchor.text});
         row.createEl('p',{text:record.result.translation,cls:'note-digest-saved-translation'});
+        const wordNote = record.wordNote?.path;
+        if (wordNote && record.savedTo.includes(wordNote) && this.app.vault.getAbstractFileByPath(wordNote)) {
+          const open=row.createEl('button',{text:'打开单词笔记'});
+          open.onclick=()=>{void this.app.workspace.openLinkText(wordNote,'',false);};
+        }
         let remove: HTMLButtonElement | undefined;
         if (!record.unlocated) {
           const locate=row.createEl('button',{text:'定位原文'});

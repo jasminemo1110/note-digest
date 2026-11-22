@@ -8,13 +8,18 @@ export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
 export const SIDEBAR_NOTE_PATH = 'Digest/侧栏学习笔记.md';
 const SIDEBAR_NOTE_HEADER = '<!-- note-digest:sidebar-words -->';
+const WORD_NOTE_FOLDER = 'Digest/单词学习/';
+const WORD_SOURCES_START = '<!-- note-digest:word-sources -->';
+const WORD_SOURCES_END = '<!-- note-digest:word-sources-end -->';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
 export interface SaveUndo { readonly recordId: string; readonly id: string }
+interface WordNote { id: string; path: string }
 export interface LearningRecord {
   id: string; documentId: string; kind: Kind; anchor: Anchor; context: string;
   originalContext?: string; unlocated?: true;
   result: DigestResult; createdAt: string; active: boolean; savedTo: string[]; deletionPending?: boolean; pendingExplanation?: {result: DigestResult; copies: {path: string; before: string; after: string}[]};
   pendingUndo?: {id: string; paths: string[]};
+  wordNote?: WordNote;
 }
 type LearningCard = Pick<LearningRecord, 'id' | 'kind' | 'anchor' | 'result' | 'originalContext'>;
 export interface CollectionData { version: 1; secretName: string; documents: SourceDocument[]; records: LearningRecord[] }
@@ -89,6 +94,9 @@ export function loadCollection(input: unknown): CollectionData {
       if (!pending || typeof pending.id !== 'string' || !ID.test(pending.id) || !Array.isArray(pending.paths) ||
           !pending.paths.length || !pending.paths.every(validPath)) throw new Error('收藏撤销数据损坏。');
     }
+    if (record.wordNote !== undefined && (record.kind !== 'word' || !record.wordNote ||
+        typeof record.wordNote.id !== 'string' || !/^[0-9a-f]{64}$/.test(record.wordNote.id) || !validPath(record.wordNote.path) ||
+        paths.has(record.wordNote.path) || notes.has(record.wordNote.path))) throw new Error('单词笔记数据损坏。');
     recordIds.add(record.id);
     record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
   }
@@ -104,6 +112,29 @@ function commonUsagesMarkdown(result: DigestResult): string {
 }
 function sourceLink(path: string | null): string {
   return path ? `[返回原文](/${path.split('/').map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')})` : '原文已删除或无法定位';
+}
+function wordNoteHeader(word: WordNote): string { return `<!-- note-digest:word-note:${word.id} -->`; }
+function wordTitle(record: LearningRecord): string {
+  const title = explanationHeadword(record.anchor.text, record.result).normalize('NFKC').trim().replace(/\s+/g, ' ');
+  return title.replace(/^[\s.,!?;:()“”]+|[\s.,!?;:()“”]+$/g, '') || title;
+}
+function wordSourceLine(doc: SourceDocument): string {
+  const label = doc.path?.split('/').at(-1)?.replace(/\.md$/, '');
+  const title = label ? ` · ${escapeMarkdown(label)}` : '';
+  return `- ${sourceLink(doc.path)}${title} <!-- note-digest:word-source:${doc.id} -->\n\n`;
+}
+function addWordSource(current: string, doc: SourceDocument): string {
+  const start = current.indexOf(WORD_SOURCES_START);
+  const end = current.indexOf(WORD_SOURCES_END);
+  if (start < 0 || end < start || current.indexOf(WORD_SOURCES_START, start + 1) >= 0 || current.indexOf(WORD_SOURCES_END, end + 1) >= 0) {
+    throw new Error('单词笔记的原文链接区标记已改动。');
+  }
+  const marker = `<!-- note-digest:word-source:${doc.id} -->`;
+  return current.slice(start, end).includes(marker) ? current : current.slice(0, end) + wordSourceLine(doc) + current.slice(end);
+}
+function ownedIndependentNote(current: string, path: string, record: LearningRecord, doc: SourceDocument): boolean {
+  return path === record.wordNote?.path ? current.startsWith(wordNoteHeader(record.wordNote) + '\n') :
+    path === doc.notePath && current.includes(`<!-- note-digest:document:${doc.id} -->`);
 }
 function legacyRecordMarkdown(record: LearningRecord, doc: SourceDocument): string {
   const result = record.result;
@@ -166,15 +197,16 @@ export function recordMarkdown(record: LearningRecord, _doc: SourceDocument): st
 function markedCardMarkdown(record: LearningCard, context?: string): string {
   return groupedRecordMarkdown(record, false, context) + `<!-- note-digest:record-end:${record.id} -->\n`;
 }
-export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument, unchanged = false): {text: string; removed: boolean} {
+function savedCardRange(current: string, record: LearningRecord, doc: SourceDocument, unchanged = false): {start: number; end: number} | undefined {
   const marker = `<!-- note-digest:record:${record.id} -->`;
   const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
   const start = current.indexOf(marker);
   if (start < 0 && unchanged && current.includes(endMarker)) throw new Error('卡片边界已改动，已保留内容。');
-  if (start < 0) return {text: current, removed: false};
+  if (start < 0) return;
   if (current.indexOf(marker, start + marker.length) >= 0) throw new Error('记录标记重复，无法安全确定要删除的卡片。');
   const boundary = current.indexOf(LEARNING_BOUNDARY);
-  const ownedNote = current.includes(`<!-- note-digest:document:${doc.id} -->`);
+  const ownedNote = current.includes(`<!-- note-digest:document:${doc.id} -->`) ||
+    (record.wordNote && current.startsWith(wordNoteHeader(record.wordNote) + '\n'));
   if (!ownedNote && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length)) throw new Error('卡片不在可确认的学习笔记区域，已保留原文。');
   const end = current.indexOf(endMarker);
   if (end >= 0) {
@@ -184,15 +216,28 @@ export function removeSavedRecord(current: string, record: LearningRecord, doc: 
     if (unchanged && current.slice(start, finish) !== markedCardMarkdown(record).trimStart()) {
       throw new Error('卡片保存后有改动，已保留内容。');
     }
-    return {text: current.slice(0,start) + current.slice(finish), removed: true};
+    return {start, end: finish};
   }
   if (unchanged) throw new Error('卡片缺少结束标记，已保留内容。');
   // Historical cards have no closing marker. Delete only exact known output, leaving manual additions untouched.
-  for (const candidate of [groupedRecordMarkdown(record,true), groupedRecordMarkdown(record), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)]) {
+  const candidates = [groupedRecordMarkdown(record,true), groupedRecordMarkdown(record), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)];
+  const oldLink = /^\n### [^\r\n]+\n\n\[返回原文\]\(\/([^\r\n)]+)\) · \d{4}-\d{2}-\d{2}\n/.exec(current.slice(start + marker.length))?.[1];
+  if (oldLink) {
+    // A renamed or deleted source can leave its original URL in a byte-identical legacy card.
+    try {
+      const path = decodeURIComponent(oldLink);
+      if (validPath(path) && path !== doc.path) candidates.push(legacyRecordMarkdown(record, {...doc, path}));
+    } catch { /* A malformed URL cannot identify a generated legacy card. */ }
+  }
+  for (const candidate of candidates) {
     const index = current.indexOf(candidate);
-    if (index >= 0 && index + candidate.indexOf(marker) === start) return {text:current.slice(0,index)+current.slice(index+candidate.length),removed:true};
+    if (index >= 0 && index + candidate.indexOf(marker) === start) return {start: index, end: index + candidate.length};
   }
   throw new Error('旧卡片已手工修改且缺少结束标记，无法安全确定删除范围，请手动删除该卡片。');
+}
+export function removeSavedRecord(current: string, record: LearningRecord, doc: SourceDocument, unchanged = false): {text: string; removed: boolean} {
+  const card = savedCardRange(current, record, doc, unchanged);
+  return card ? {text: current.slice(0, card.start) + current.slice(card.end), removed: true} : {text: current, removed: false};
 }
 function updateCard(current: string, record: LearningRecord, doc: SourceDocument, next: LearningRecord): string {
   const marker = `<!-- note-digest:record:${record.id} -->`;
@@ -200,7 +245,8 @@ function updateCard(current: string, record: LearningRecord, doc: SourceDocument
   const start = current.indexOf(marker);
   const end = current.indexOf(endMarker);
   const boundary = current.indexOf(LEARNING_BOUNDARY);
-  const owned = doc.path !== null && current.includes(`<!-- note-digest:document:${doc.id} -->`);
+  const owned = current.includes(`<!-- note-digest:document:${doc.id} -->`) ||
+    (record.wordNote && current.startsWith(wordNoteHeader(record.wordNote) + '\n'));
   if (start < 0 || (!owned && (boundary < 0 || start < boundary + LEARNING_BOUNDARY.length))) {
     throw new Error('找不到对应学习卡片。');
   }
@@ -272,13 +318,23 @@ function groupTokens(kind: Kind) {
   return {start: `<!-- note-digest:group:${kind} -->`, end: `<!-- note-digest:end:${kind} -->`};
 }
 function appendGrouped(current: string, record: LearningCard, context?: string): string {
-  const {start, end} = groupTokens(record.kind);
+  return appendGroupedCard(current, record.kind, markedCardMarkdown(record, context));
+}
+function appendGroupedCard(current: string, kind: Kind, card: string): string {
+  const {start, end} = groupTokens(kind);
   const startIndex = current.indexOf(start); const endIndex = current.indexOf(end);
   if (startIndex < 0 && endIndex < 0) {
-    return current + `\n\n${start}\n### ${record.kind === 'word' ? '单词' : '金句'}\n` + markedCardMarkdown(record, context) + `\n${end}\n`;
+    return current + `\n\n${start}\n### ${kind === 'word' ? '单词' : '金句'}\n` + card + `\n${end}\n`;
   }
   if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
-  return current.slice(0, endIndex) + markedCardMarkdown(record, context) + '\n' + current.slice(endIndex);
+  return current.slice(0, endIndex) + card + '\n' + current.slice(endIndex);
+}
+function prepareWordNote(current: string | null, record: LearningRecord, doc: SourceDocument): string {
+  const word = record.wordNote!;
+  const heading = escapeMarkdown(Array.from(wordTitle(record)).slice(0, 120).join('')).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
+  const base = current ?? `${wordNoteHeader(word)}\n# ${heading}\n\n${WORD_SOURCES_START}\n\n${WORD_SOURCES_END}\n`;
+  if (!ownedIndependentNote(base, word.path, record, doc)) throw new Error('目标笔记已有其他内容，已保留该文件。');
+  return addWordSource(base, doc);
 }
 /** Explicit migration moves only byte-identical generated cards into typed groups. */
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
@@ -321,7 +377,20 @@ export class CollectionStore {
       : record.active && record.savedTo.length > 0))) : [];
   }
   notePathFor(path: string): string | undefined { return this.data.documents.find(doc => doc.path === path)?.notePath; }
-  isLearningNote(path: string): boolean { return path === SIDEBAR_NOTE_PATH || this.data.documents.some(doc => doc.notePath === path); }
+  isLearningNote(path: string): boolean {
+    return path === SIDEBAR_NOTE_PATH || path.startsWith(WORD_NOTE_FOLDER) || this.data.documents.some(doc => doc.notePath === path) ||
+      this.data.records.some(record => record.wordNote?.path === path);
+  }
+  private async planWordNote(data: CollectionData, record: LearningRecord): Promise<WordNote> {
+    if (record.wordNote) return record.wordNote;
+    const key = wordTitle(record).toLowerCase();
+    const id = await digestText(key);
+    const known = data.records.find(other => other.wordNote?.id === id)?.wordNote;
+    const name = Array.from(key.replace(/[<>:"/\\|?*\[\]#^\x00-\x1f]/g, '-').replace(/^[. ]+|[. ]+$/g, '')).slice(0, 40).join('') || 'word';
+    const reserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name);
+    const fileName = name === key && !reserved ? name : `${name.replaceAll('.', '-')}--${id.slice(0, 16)}`;
+    return record.wordNote = known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
+  }
   saveSidebarWord(selection: SidebarSelection, input: DigestResult): Promise<{text: string; duplicate: boolean}> {
     return this.queue(async () => {
       const result = validateResult(input, 'explain');
@@ -354,6 +423,7 @@ export class CollectionStore {
       for (const record of next.records) {
         record.savedTo = record.savedTo.map(movePath);
         if (record.pendingUndo) record.pendingUndo.paths = record.pendingUndo.paths.map(movePath);
+        if (record.wordNote) record.wordNote = {...record.wordNote, path: movePath(record.wordNote.path)};
       }
       if (newPath !== null) for (const record of next.records) {
         for (const copy of record.pendingExplanation?.copies ?? []) {
@@ -378,6 +448,17 @@ export class CollectionStore {
       if (current === null) throw new Error('文件已移动或删除，请重试。');
       const result = removeSavedRecord(current, record, doc, unchanged);
       removed = result.removed;
+      if (removed && path === record.wordNote?.path && ownedIndependentNote(current, path, record, doc)) {
+        const sameSource = this.data.records.some(other => other.id !== record.id && other.documentId === doc.id &&
+          result.text.includes(`<!-- note-digest:record:${other.id} -->`));
+        const link = wordSourceLine(doc);
+        const start = result.text.indexOf(WORD_SOURCES_START);
+        const end = result.text.indexOf(WORD_SOURCES_END);
+        const offset = result.text.indexOf(link, start);
+        if (!sameSource && start >= 0 && offset > start && offset + link.length <= end) {
+          return result.text.slice(0, offset) + result.text.slice(offset + link.length);
+        }
+      }
       return result.text;
     });
     return removed;
@@ -424,7 +505,7 @@ export class CollectionStore {
       const record=next.records.find(record=>record.id===id);
       if (!record) throw new Error('收藏记录不存在。');
       const doc=next.documents.find(doc=>doc.id===record.documentId)!;
-      const paths=[...new Set([doc.path,doc.notePath,...record.savedTo,...(record.pendingUndo?.paths ?? [])].filter((path): path is string=>path!==null))];
+      const paths=[...new Set([doc.path,doc.notePath,record.wordNote?.path,...record.savedTo,...(record.pendingUndo?.paths ?? [])].filter((path): path is string=>!!path))];
       record.active=false;record.deletionPending=true;
       delete record.pendingUndo;
       // Durable cancellation and retry identity before modifying either note.
@@ -446,6 +527,65 @@ export class CollectionStore {
       if (complete) delete record.pendingExplanation;
       await this.commit(next);
       return {targets,complete};
+    });
+  }
+  splitWordNotes(): Promise<{moved: number; notes: number; failures: {id: string; message: string}[]}> {
+    return this.queue(async () => {
+      const documents = new Map(this.data.documents.map(doc => [doc.id, doc]));
+      const candidates = this.data.records.filter(record => record.kind === 'word' && record.savedTo.includes(documents.get(record.documentId)!.notePath));
+      const failures: {id: string; message: string}[] = [];
+      const destinations = new Set<string>();
+      let moved = 0;
+      for (const candidate of candidates) {
+        const next = structuredClone(this.data);
+        const record = next.records.find(record => record.id === candidate.id)!;
+        const doc = documents.get(record.documentId)!;
+        try {
+          if (record.deletionPending || record.pendingUndo || record.pendingExplanation) throw new Error('请先完成这张卡片的待处理操作。');
+          const legacy = await this.port.read(doc.notePath);
+          if (legacy !== null && !ownedIndependentNote(legacy, doc.notePath, record, doc)) throw new Error('无法确认旧学习笔记的归属。');
+          const range = legacy === null ? undefined : savedCardRange(legacy, record, doc);
+          const word = await this.planWordNote(next, record);
+          if (legacy !== null && range) {
+            const raw = legacy.slice(range.start, range.end).trimStart();
+            const endMarker = `<!-- note-digest:record-end:${record.id} -->`;
+            const card = raw.includes(endMarker) ? raw : `${raw.trimEnd()}\n${endMarker}\n`;
+            // Persist the destination before copying so an interrupted migration can resume.
+            await this.commit(next);
+            await this.port.update(word.path, current => {
+              const base = prepareWordNote(current, record, doc);
+              const existing = savedCardRange(base, record, doc);
+              if (!existing) return appendGroupedCard(base, 'word', '\n\n' + card);
+              if (base.slice(existing.start, existing.end) !== card) throw new Error('新旧卡片内容不同，已保留两处内容。');
+              return base;
+            });
+            if (!record.savedTo.includes(word.path)) record.savedTo.push(word.path);
+            await this.commit(next);
+            const copy = await this.port.read(word.path);
+            const copied = copy === null ? undefined : savedCardRange(copy, record, doc);
+            if (!copy || !ownedIndependentNote(copy, word.path, record, doc) || !copied || copy.slice(copied.start, copied.end) !== card) {
+              throw new Error('无法核对新卡片，已保留旧笔记。');
+            }
+            await this.port.update(doc.notePath, current => {
+              if (current !== legacy) throw new Error('旧笔记刚刚有改动，已保留其内容。');
+              return legacy.slice(0, range.start) + legacy.slice(range.end);
+            });
+          } else {
+            const copy = record.savedTo.includes(word.path) ? await this.port.read(word.path) : null;
+            if (!copy || !ownedIndependentNote(copy, word.path, record, doc) || !savedCardRange(copy, record, doc)) {
+              throw new Error('找不到可核对的旧卡片和新副本。');
+            }
+          }
+          record.savedTo = record.savedTo.filter(path => path !== doc.notePath);
+          await this.commit(next);
+          if (this.recentSave?.receipt.recordId === record.id) this.recentSave = undefined;
+          moved++;
+          destinations.add(word.path);
+        } catch (error) {
+          failures.push({id: record.id, message: error instanceof Error ? error.message : '拆分失败。'});
+        }
+      }
+      return {moved, notes: destinations.size, failures};
     });
   }
   compact(path: string): Promise<string> {
@@ -497,8 +637,7 @@ export class CollectionStore {
         try {
           const before = await this.port.read(path);
           if (before === null) throw new Error('学习卡片所在笔记已不存在。');
-          if (path === selection.path ? articleBody(before) !== body :
-              path !== doc.notePath || !before.includes(`<!-- note-digest:document:${doc.id} -->`)) {
+          if (path === selection.path ? articleBody(before) !== body : !ownedIndependentNote(before, path, record, doc)) {
             throw new Error('原文或学习笔记已变化。');
           }
           const beforeHash = await digestText(before);
@@ -571,15 +710,17 @@ export class CollectionStore {
         record: structuredClone(record),
         targets: [{path: selection.path, ok: true, message: '已收藏'}],
       };
+      if (kind === 'word' && !record.savedTo.includes(doc.notePath)) await this.planWordNote(next, record);
+      const independentPath = record.wordNote?.path ?? doc.notePath;
       record.active = true; record.deletionPending = false;
       // Durable intent before external writes: retries retain identity even after a partial failure/crash.
       await this.commit(next);
-      const paths = !located || target === 'note' ? [doc.notePath] : target === 'both' ? [selection.path, doc.notePath] : [selection.path];
+      const paths = !located || target === 'note' ? [independentPath] : target === 'both' ? [selection.path, independentPath] : [selection.path];
       const targets: SaveReport['targets'] = [];
       const appended: string[] = [];
       for (const path of paths) {
         try {
-          if (located && target === 'source' && path === doc.notePath) {
+          if (located && target === 'source' && path === independentPath) {
             const latest = await this.port.read(selection.path);
             if (latest === null || articleBody(latest) !== articleBody(selection.source)) throw new Error('原文已变化，请重新选择后重试。');
           }
@@ -587,6 +728,11 @@ export class CollectionStore {
           await this.port.update(path, content => {
             const isSource = path === selection.path;
             if (isSource && (content === null || articleBody(content) !== articleBody(selection.source))) throw new Error('原文已变化，请重新选择后重试。');
+            if (path === record!.wordNote?.path) {
+              const base = prepareWordNote(content, record!, doc!);
+              existed = base.includes(`<!-- note-digest:record:${record!.id} -->`);
+              return appendRecord(base, record!, false);
+            }
             const header = `<!-- note-digest:document:${doc!.id} -->`;
             if (!isSource && content !== null && !content.includes(header)) throw new Error('目标笔记不是本插件的学习笔记，已避免覆盖。');
             const base = content ?? `${header}\n# Note Digest 学习笔记\n\n${sourceLink(doc!.path)}\n`;
@@ -599,7 +745,7 @@ export class CollectionStore {
           targets.push({path, ok: true, message: existed ? '已收藏' : '已保存'});
         } catch (error) {
           targets.push({path, ok: false, message: error instanceof Error ? error.message : '保存失败，请重试'});
-          if (path === selection.path && !record.savedTo.includes(path) && !paths.includes(doc.notePath)) paths.push(doc.notePath);
+          if (path === selection.path && !record.savedTo.includes(path) && !paths.includes(independentPath)) paths.push(independentPath);
         }
       }
       const undo = appended.length ? {recordId: record.id, id: this.uuid()} : undefined;
