@@ -6,7 +6,30 @@ Note Digest 是一款独立的 Obsidian 桌面插件。打开仓库里的英文 
 
 ## 安装
 
-目前尚未上架 Obsidian 社区插件目录，也未提供预编译安装包，需要从源码构建。需要 **Obsidian 桌面版 1.11.5 或更新版本**、**Node.js 20+（含 npm）**；通过命令克隆时还需要 Git。建议先在测试仓库体验。
+需要 **Obsidian 桌面版 1.11.5 或更新版本**。上架 Obsidian 社区插件目录前，可通过 GitHub Release 手动安装。
+
+### 从 GitHub Release 下载安装
+
+1. 打开 [GitHub Releases](https://github.com/jasminemo1110/note-digest/releases)，从同一个版本的 **Assets** 下载 `main.js`、`manifest.json` 和 `styles.css`。
+2. 在目标 Obsidian 仓库中创建 `.obsidian/plugins/note-digest/`，把三个文件放进去。`.obsidian` 是隐藏目录。
+3. 在 Obsidian 的 **设置 → 第三方插件 / 社区插件** 中允许使用社区插件，找到并启用 **Note Digest**。如果列表未刷新，重启 Obsidian。
+4. 要使用翻译、语境解释或摘要，请按下方步骤[配置 DeepSeek API Key](#配置-deepseek-api-key)。
+
+更新已有安装时，先禁用 Note Digest，下载新版本的三个文件并替换旧文件，保留存有设置和收藏记录的 `data.json`，然后重新启用插件。
+
+### 从源码构建
+
+需要 **Node.js 20+（含 npm）** 和 Git。
+
+```bash
+git clone https://github.com/jasminemo1110/note-digest.git
+cd note-digest
+npm ci
+npm test
+npm run build
+```
+
+构建通过后，把项目根目录的 `main.js`、`manifest.json` 和 `styles.css` 放进目标仓库的 `.obsidian/plugins/note-digest/`，然后按上面的步骤启用插件。
 
 ### 让 AI Agent 帮你安装
 
@@ -17,35 +40,12 @@ Note Digest 是一款独立的 Obsidian 桌面插件。打开仓库里的英文 
 https://github.com/jasminemo1110/note-digest
 
 先询问我要安装到哪个 Obsidian 仓库，并确认它的本地路径。
-克隆项目，阅读 README.md 和 AGENTS.md，检查 Node.js 版本，
-运行 npm ci、npm test 和 npm run build。
-验证通过后，把 main.js、manifest.json、styles.css 复制到该仓库的
+从同一个 GitHub Release 的 Assets 下载 main.js、manifest.json 和 styles.css，
+检查 manifest.json 的版本，然后把三个文件复制到该仓库的
 .obsidian/plugins/note-digest/ 目录，然后告诉我如何在 Obsidian 中启用插件。
 如果已有旧版，只更新这三个文件，保留 data.json、现有笔记和其他设置。
 不要读取、索取或修改 API Key；密钥由我自己在 Obsidian 界面配置。
 ```
-
-普通聊天窗口如果不能访问你的电脑，就无法代为安装；也可以按下面的步骤手动完成。
-
-### 手动安装
-
-```bash
-git clone https://github.com/jasminemo1110/note-digest.git
-cd note-digest
-npm ci
-npm test
-npm run build
-```
-
-然后：
-
-1. 找到你要使用的 Obsidian 仓库文件夹；这是存放 Markdown 笔记的目录，不是 Obsidian 应用程序目录。
-2. 在仓库内创建 `.obsidian/plugins/note-digest/` 文件夹。`.obsidian` 是隐藏目录，需要在文件管理器中显示隐藏文件。
-3. 将构建后的 `main.js`，以及项目根目录的 `manifest.json`、`styles.css` 复制进去。
-4. 打开 Obsidian，在**设置 → 第三方插件 / 社区插件**中允许使用社区插件，找到并启用 **Note Digest**。如果列表未刷新，重启 Obsidian。
-5. 要使用翻译、语境解释或摘要，按下方说明配置 DeepSeek API Key，再打开一篇英文 Markdown 文章开始阅读。
-
-更新时先关闭 Note Digest，更新源码并重新构建，再替换上述三个文件，最后重新启用插件。不要删除插件目录里的 `data.json`，其中保存着收藏记录和设置。
 
 ## 配置 DeepSeek API Key
 
