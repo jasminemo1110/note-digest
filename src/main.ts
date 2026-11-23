@@ -1,5 +1,5 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
-import { canCollectSelection, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
+import { canCollectSelection, completeSelectionWord, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
 import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, selectDigestBatch, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection, type ParagraphTranslation } from './reading-layout';
@@ -546,29 +546,32 @@ export default class NoteDigestPlugin extends Plugin {
     }
     return readingSnapshot(path, body, domText, rendered, capture.context);
   }
-  private async latestSelection(fallback?: DigestSelection): Promise<DigestSelection> {
+  private async latestSelection(fallback?: DigestSelection, forLookup = false): Promise<DigestSelection> {
     const live = window.getSelection();
     const sidebar = this.readSidebarSelection(live);
     if (sidebar) {
       if (sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
-      return sidebar;
+      return forLookup ? completeSelectionWord(sidebar) : sidebar;
     }
     const selectedView = this.articleViewForSelection(live);
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const captured = selectedView ? await this.readArticleSelection(live, selectedView) :
+    const raw = selectedView ? await this.readArticleSelection(live, selectedView) :
       active?.getMode() === 'source' && active.editor.getSelection().trim() ? await this.readArticleSelection(null, active) : undefined;
-    if (captured) {
-      if (captured.start >= 0 && fallback && 'path' in fallback && captured.path === fallback.path &&
+    if (raw) {
+      const captured = forLookup ? completeSelectionWord(raw) : raw;
+      if ('path' in captured && captured.start >= 0 && fallback && 'path' in fallback && captured.path === fallback.path &&
           captured.source === fallback.source && captured.start === fallback.start &&
           captured.end === fallback.end && captured.text === fallback.text) return fallback;
       return captured;
     }
-    if (fallback && ('sidebar' in fallback || fallback.path === this.app.workspace.getActiveFile()?.path)) return fallback;
+    if (fallback && ('sidebar' in fallback || fallback.path === this.app.workspace.getActiveFile()?.path)) {
+      return forLookup ? completeSelectionWord(fallback) : fallback;
+    }
     throw new Error('请先在原文中划选英文。');
   }
   async runSelectionAction(action: 'translate' | 'explain', fallback?: DigestSelection): Promise<void> {
     try {
-      const selection = await this.latestSelection(fallback);
+      const selection = await this.latestSelection(fallback, true);
       if (isLongSelection(selection.text)) throw new Error('请选择词语、短语或短句。多段文字可使用「Digest 选中段落」。');
       await this.run(selection, action);
     } catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
@@ -590,7 +593,7 @@ export default class NoteDigestPlugin extends Plugin {
       }
       const quote = action === 'quote' && 'path' in selected ? selected : undefined;
       const requestGeneration = this.generation + 1;
-      const result = await this.run(selected, 'translate');
+      const result = await this.run(action === 'digest' ? completeSelectionWord(selected) : selected, 'translate');
       if (quote && result && requestGeneration === this.generation && !this.stopped) {
         const {text: status} = await this.collect(quote, result, 'quote', 'both');
         new Notice(status);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { snapshot, insertTranslation, validateResult } from '../src/core';
+import { completeSelectionWord, readingSnapshot, snapshot, insertTranslation, validateResult } from '../src/core';
 
 test('reading mode refuses ambiguous source; editor offset resolves it', () => {
   const source = 'A word.\n\nA word.';
@@ -11,6 +11,38 @@ test('context is bounded and snapshot does not change input', () => {
   const source = 'a'.repeat(2000) + 'unique' + 'b'.repeat(2000);
   const s = snapshot('a.md', source, 'unique');
   assert.equal(s.context.length, 2406); assert.equal(s.source, source);
+});
+test('a clipped word uses its complete source range for lookup and inline annotation', () => {
+  const source = '*An earlier drought passed.*\n\n*Plants can withstand prolonged periods of drought.*';
+  const wordStart = source.lastIndexOf('drought');
+  for (const fragment of ['rought', 'drou', 'roug']) {
+    const raw = snapshot('a.md', source, fragment, source.lastIndexOf(fragment));
+    const completed = completeSelectionWord(raw);
+    assert.ok('path' in completed);
+    assert.equal(completed.text, 'drought');
+    assert.equal(completed.start, wordStart);
+    assert.equal(completed.end, wordStart + 'drought'.length);
+    assert.equal(completed.contextOffset, wordStart);
+    assert.equal(insertTranslation(source, completed, '干旱', 'inline'), source.replace(/drought\.\*$/, 'drought（干旱）.*'));
+    assert.equal(raw.text, fragment);
+  }
+});
+test('lookup completes a visibly clipped word without inventing a writable source range', () => {
+  const source = '**d**rought occurred.';
+  const rendered = 'drought occurred.';
+  const raw = readingSnapshot('a.md', source, 'rought', {
+    section: {lineStart: 0, lineEnd: 0, text: source}, paragraph: rendered, offset: 1,
+  }, {text: rendered, offset: 1});
+  const completed = completeSelectionWord(raw);
+  assert.ok('path' in completed);
+  assert.equal(completed.text, 'drought');
+  assert.equal(completed.contextOffset, 0);
+  assert.throws(() => insertTranslation(source, completed, '干旱', 'inline'), /无法确认/);
+
+  for (const [body, text] of [['A drought.', 'drought'], ['A rought.', 'rought'], ['A drought followed.', 'drought foll']]) {
+    const snapshotRange = snapshot('a.md', body, text);
+    assert.equal(completeSelectionWord(snapshotRange), snapshotRange);
+  }
 });
 test('inline insertion escapes AI markup and repeat insertion refuses changed source', () => {
   const source = 'A compelling argument.'; const s = snapshot('a.md', source, 'compelling');

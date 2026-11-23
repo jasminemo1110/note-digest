@@ -86,6 +86,31 @@ export function canCollectSelection(selection: SelectionSnapshot): boolean {
     articleBody(selection.source).slice(selection.start, selection.end) === selection.text;
 }
 
+/** Complete a clipped word at the captured occurrence before sending a lookup. */
+export function completeSelectionWord(selection: DigestSelection): DigestSelection {
+  const {text, context, contextOffset} = selection;
+  if (!isEnglishWord(text)) return selection;
+  const offset = contextOffset ?? context.indexOf(text);
+  if (offset < 0 || context.slice(offset, offset + text.length) !== text ||
+      (contextOffset === undefined && context.lastIndexOf(text) !== offset)) return selection;
+
+  const prefix = text === text.trimStart() ? /[\p{Script=Latin}\p{M}]+$/u.exec(context.slice(0, offset))?.[0] ?? '' : '';
+  const suffix = text === text.trimEnd() ? /^[\p{Script=Latin}\p{M}]+/u.exec(context.slice(offset + text.length))?.[0] ?? '' : '';
+  if (!prefix && !suffix) return selection;
+  const word = prefix + text + suffix;
+  if (word.length > 12000 || !isEnglishWord(word)) return selection;
+  const completedOffset = offset - prefix.length;
+  if ('sidebar' in selection) return {...selection, text: word, contextOffset: completedOffset};
+
+  const start = selection.start - prefix.length;
+  const end = selection.end + suffix.length;
+  const completed = {...selection, text: word, contextOffset: contextOffset === undefined ? undefined : completedOffset};
+  if (canCollectSelection(selection) && start >= 0 && articleBody(selection.source).slice(start, end) === word) {
+    return {...completed, start, end};
+  }
+  return {...completed, start: -1, end: -1, readOnly: true};
+}
+
 export function validateResult(value: unknown, action: Action): DigestResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('AI 返回格式异常，请重试。');
   if (action === 'summarize') {
