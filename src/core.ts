@@ -6,9 +6,11 @@ export type Action = 'translate' | 'explain' | 'summarize';
 export interface SelectionSnapshot {
   path: string; source: string; text: string; start: number; end: number; context: string; readOnly?: true;
   contextOffset?: number;
+  originalSelection?: SelectionSnapshot;
 }
 export interface SidebarSelection {
   sidebar: true; text: string; context: string; contextOffset: number;
+  originalSelection?: SidebarSelection;
 }
 export type DigestSelection = SelectionSnapshot | SidebarSelection;
 export const ASSESSMENT_LABELS = {
@@ -68,17 +70,18 @@ export function snapshot(path: string, source: string, text: string, offset?: nu
 }
 export function readingSnapshot(path: string, source: string, text: string,
   rendered?: {section?: RenderedSection; paragraph: string; offset: number; cell?: TableCellPosition; tag?: string},
-  visibleContext?: {text: string; offset: number}): SelectionSnapshot {
+  visibleContext?: {text: string; offset: number}, forLookup = false): SelectionSnapshot {
   if (!path.endsWith('.md') || !text.trim() || text.length > 12000) throw new Error('请选择 1–12,000 字符的 Markdown 英文内容。');
   const mapped = rendered && mapReadingRange(source, rendered.section, rendered.paragraph, rendered.offset, text, rendered.cell, rendered.tag);
   const body = articleBody(source);
-  if (!mapped || mapped.end > body.length) {
-    return {path, source, text, start: -1, end: -1, context: visibleContext?.text ?? text,
+  const selection: SelectionSnapshot = mapped && mapped.end <= body.length
+    ? {path, source, text, ...mapped, context: visibleContext?.text ?? body.slice(Math.max(0, mapped.start - 1200), mapped.end + 1200),
+      contextOffset: visibleContext?.offset}
+    : {path, source, text, start: -1, end: -1, context: visibleContext?.text ?? text,
       contextOffset: visibleContext?.offset ?? 0, readOnly: true};
-  }
-  const {start, end} = mapped;
-  return {path, source, text, start, end, context: visibleContext?.text ?? body.slice(Math.max(0, start - 1200), end + 1200),
-    contextOffset: visibleContext?.offset};
+  if (!forLookup) return selection;
+  return normalizeWordLookup(selection, rendered && ((shift, word) =>
+    mapReadingRange(source, rendered.section, rendered.paragraph, rendered.offset + shift, word, rendered.cell, rendered.tag)));
 }
 
 export function canCollectSelection(selection: SelectionSnapshot): boolean {
@@ -86,29 +89,51 @@ export function canCollectSelection(selection: SelectionSnapshot): boolean {
     articleBody(selection.source).slice(selection.start, selection.end) === selection.text;
 }
 
-/** Complete a clipped word at the captured occurrence before sending a lookup. */
-export function completeSelectionWord(selection: DigestSelection): DigestSelection {
-  const {text, context, contextOffset} = selection;
-  if (!isEnglishWord(text)) return selection;
+type LocateWord = (shift: number, word: string) => {start: number; end: number} | undefined;
+
+export function normalizeWordLookup(selection: SelectionSnapshot, locate?: LocateWord): SelectionSnapshot;
+export function normalizeWordLookup(selection: DigestSelection): DigestSelection;
+export function normalizeWordLookup(selection: DigestSelection, locate?: LocateWord): DigestSelection {
+  const {text, contextOffset} = selection;
+  if (selection.originalSelection || !/\p{Script=Latin}/u.test(text) || /[\r\n]/.test(text)) return selection;
+  const context = selection.context || text;
   const offset = contextOffset ?? context.indexOf(text);
-  if (offset < 0 || context.slice(offset, offset + text.length) !== text ||
+  const endOffset = offset + text.length;
+  if (offset < 0 || context.slice(offset, endOffset) !== text ||
       (contextOffset === undefined && context.lastIndexOf(text) !== offset)) return selection;
 
-  const prefix = text === text.trimStart() ? /[\p{Script=Latin}\p{M}]+$/u.exec(context.slice(0, offset))?.[0] ?? '' : '';
-  const suffix = text === text.trimEnd() ? /^[\p{Script=Latin}\p{M}]+/u.exec(context.slice(offset + text.length))?.[0] ?? '' : '';
-  if (!prefix && !suffix) return selection;
-  const word = prefix + text + suffix;
-  if (word.length > 12000 || !isEnglishWord(word)) return selection;
-  const completedOffset = offset - prefix.length;
-  if ('sidebar' in selection) return {...selection, text: word, contextOffset: completedOffset};
+  const words = [...context.matchAll(/\p{Script=Latin}\p{M}*(?:['’-]?\p{Script=Latin}\p{M}*)*/gu)]
+    .filter(word => word.index < endOffset && word.index + word[0].length > offset);
+  const [first, second] = words;
+  if (!first || words.length > 2) return selection;
+  const firstEnd = first.index + first[0].length;
+  const from = Math.max(first.index, offset);
+  const to = Math.min(firstEnd, endOffset);
+  // A hyphen or apostrophe outside the selection does not pull in another part of the word.
+  const wordStart = from - (/[^'’-]*$/.exec(context.slice(first.index, from))?.[0].length ?? 0);
+  const wordEnd = to + (/^[^'’-]*/.exec(context.slice(to, firstEnd))?.[0].length ?? 0);
+  const word = context.slice(wordStart, wordEnd);
+  const edge = /^[\p{Zs}\t\p{P}]*$/u;
+  if (word === text || word.length > 12000 || !isEnglishWord(word) || !edge.test(context.slice(offset, wordStart))) return selection;
+  if (second) {
+    const separator = context.slice(wordEnd, second.index);
+    const clipped = context.slice(second.index, endOffset);
+    if (!edge.test(separator) || !/\p{P}/u.test(separator) ||
+        !/^\p{Script=Latin}$/u.test(clipped) || clipped === second[0]) return selection;
+  } else if (!edge.test(context.slice(wordEnd, endOffset))) return selection;
 
-  const start = selection.start - prefix.length;
-  const end = selection.end + suffix.length;
-  const completed = {...selection, text: word, contextOffset: contextOffset === undefined ? undefined : completedOffset};
-  if (canCollectSelection(selection) && start >= 0 && articleBody(selection.source).slice(start, end) === word) {
-    return {...completed, start, end};
-  }
-  return {...completed, start: -1, end: -1, readOnly: true};
+  if ('sidebar' in selection) return {...selection, text: word, context, contextOffset: wordStart, originalSelection: selection};
+
+  const shift = wordStart - offset;
+  const start = selection.start + shift;
+  const end = start + word.length;
+  const body = articleBody(selection.source);
+  const range = canCollectSelection(selection) && start >= 0 && body.slice(start, end) === word
+    ? {start, end} : locate?.(shift, word);
+  const corrected = {...selection, text: word, context, originalSelection: selection,
+    contextOffset: contextOffset !== undefined || context.indexOf(word) !== context.lastIndexOf(word) ? wordStart : undefined};
+  if (range && body.slice(range.start, range.end) === word) return {...corrected, ...range, readOnly: undefined};
+  return {...corrected, start: -1, end: -1, readOnly: true};
 }
 
 export function validateResult(value: unknown, action: Action): DigestResult {
@@ -268,5 +293,7 @@ export function rebaseSelectionAfterInsertion(selection: SelectionSnapshot, rece
   const shift=receipt.offset<=selection.start?receipt.length:0;
   const start=selection.start+shift,end=selection.end+shift;
   if (receipt.after.slice(start,end)!==selection.source.slice(selection.start,selection.end)) return null;
-  return {...selection,source:receipt.after,start,end};
+  const original = selection.originalSelection;
+  return {...selection,source:receipt.after,start,end,
+    ...(original && {originalSelection: rebaseSelectionAfterInsertion(original, receipt) ?? original})};
 }

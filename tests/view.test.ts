@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
-import {readingSnapshot,snapshot,translationInsertion,type DigestResult} from '../src/core';
+import {normalizeWordLookup,readingSnapshot,snapshot,translationInsertion,type DigestResult} from '../src/core';
 import {proseText} from '../src/markdown-source';
 import {planArticleSummary,sectionAt,selectDigestBatch} from '../src/article-summary';
 import {changeSectionTranslation} from '../src/section-translation';
@@ -41,6 +41,25 @@ function setup() {
 }
 const selected=snapshot('a.md','A compelling argument.','compelling');
 const explained:DigestResult={translation:'有说服力的',pronunciation:'/kəmˈpelɪŋ/',meaning:'含义',usage:'用法',example:'例句',assessment:{status:'natural',explanation:'不应显示这句话',correction:null}};
+test('both lookup modes describe the actual selection adjustment, separately from the explanation headword', () => {
+  const {view,document,calls} = setup();
+  const source = 'A drought ends. It rains. Crops recover.';
+  const adjustment = () => document.querySelector('.note-digest-selection-adjustment')?.textContent;
+  const whitespace = normalizeWordLookup(snapshot('a.md', source, 'drought '));
+  view.render(whitespace, undefined, '正在请求…', 'translate');
+  assert.equal(adjustment(), '选区已调整：原选「drought 」，按「drought」查词。');
+  view.render(whitespace, {translation:'干旱'}, '', 'translate');
+  assert.equal(adjustment(), '选区已调整：原选「drought 」，按「drought」查词。');
+  [...document.querySelectorAll('button')].find(button => button.textContent === '语境解释')!.click();
+  assert.deepEqual(calls.at(-1), ['run', whitespace, 'explain']);
+
+  const clipped = normalizeWordLookup(snapshot('a.md', source, 'rains. C'));
+  view.render(clipped, {...explained, headword:'rain'}, '', 'explain');
+  assert.equal(adjustment(), '选区已调整：原选「rains. C」，按「rains」查词。');
+  assert.equal(document.querySelector('h3.note-digest-original')?.textContent, 'rain');
+  view.render(snapshot('a.md', source, 'rains'), {...explained, headword:'rain'}, '', 'explain');
+  assert.equal(adjustment(), undefined);
+});
 test('base headword leads explanation and collection while saving keeps the original selection', async () => {
   const {view,document,calls,plugin}=setup();
   const selection=snapshot('a.md','Interpreting Research Findings','Interpreting');

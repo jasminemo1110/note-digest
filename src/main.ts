@@ -1,5 +1,5 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
-import { canCollectSelection, completeSelectionWord, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
+import { canCollectSelection, normalizeWordLookup, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
 import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, selectDigestBatch, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection, type ParagraphTranslation } from './reading-layout';
@@ -296,7 +296,7 @@ export default class NoteDigestPlugin extends Plugin {
     return this.showDigest(undefined, regenerate);
   }
   async summarizeSelection(fallback?: DigestSelection): Promise<void> {
-    try { await this.showDigest(await this.latestSelection(fallback)); }
+    try { await this.showDigest(await this.latestSelection(fallback?.originalSelection ?? fallback)); }
     catch (error) { new Notice(error instanceof Error ? error.message : '无法读取选区。'); }
   }
   retryDigest(article?: ArticleSummary, regenerate = false): Promise<void> {
@@ -478,7 +478,7 @@ export default class NoteDigestPlugin extends Plugin {
       (view): view is MarkdownView => view instanceof MarkdownView && nodes.every(node => view.contentEl.contains(node)),
     );
   }
-  private async readArticleSelection(selection = window.getSelection(), sourceView?: MarkdownView): Promise<SelectionSnapshot> {
+  private async readArticleSelection(selection = window.getSelection(), sourceView?: MarkdownView, forLookup = false): Promise<SelectionSnapshot> {
     const selectionView = this.articleViewForSelection(selection);
     const view = sourceView ?? selectionView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view?.file) throw new Error('请在 Markdown 文章或侧栏中选择英文。');
@@ -501,8 +501,12 @@ export default class NoteDigestPlugin extends Plugin {
     if (source !== undefined && !widget) {
       const text = view.editor.getSelection();
       const offset = view.editor.posToOffset(view.editor.getCursor('from'));
+      const captureEditor = () => {
+        const selected = snapshot(path, source, text, offset);
+        return forLookup ? normalizeWordLookup(selected) : selected;
+      };
       if (!nativeRange || (text === domText && source.slice(offset, offset + text.length) === text)) {
-        return snapshot(path, source, text, offset);
+        return captureEditor();
       }
       // Live Preview can hide Markdown delimiters. Compare editor coordinates when the visible text differs.
       if (cm && text && !block?.closest('.internal-embed, .markdown-embed')) {
@@ -511,7 +515,7 @@ export default class NoteDigestPlugin extends Plugin {
           matches = cm.posAtDOM(nativeRange.startContainer, nativeRange.startOffset) === offset &&
             cm.posAtDOM(nativeRange.endContainer, nativeRange.endOffset) === offset + text.length;
         } catch { /* The selection may belong to a rendered widget. */ }
-        if (matches) return snapshot(path, source, text, offset);
+        if (matches) return captureEditor();
       }
     }
     if (!capture) throw new Error('请在原文中选择英文。');
@@ -544,28 +548,30 @@ export default class NoteDigestPlugin extends Plugin {
     if (checkedSection && checkedSection.lineStart >= articleBody(body).split('\n').length) {
       throw new Error('请从原文章选择内容，不要收藏生成的学习区。');
     }
-    return readingSnapshot(path, body, domText, rendered, capture.context);
+    return readingSnapshot(path, body, domText, rendered, capture.context, forLookup);
   }
   private async latestSelection(fallback?: DigestSelection, forLookup = false): Promise<DigestSelection> {
     const live = window.getSelection();
     const sidebar = this.readSidebarSelection(live);
     if (sidebar) {
       if (sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
-      return forLookup ? completeSelectionWord(sidebar) : sidebar;
+      return forLookup ? normalizeWordLookup(sidebar) : sidebar;
     }
     const selectedView = this.articleViewForSelection(live);
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const raw = selectedView ? await this.readArticleSelection(live, selectedView) :
-      active?.getMode() === 'source' && active.editor.getSelection().trim() ? await this.readArticleSelection(null, active) : undefined;
-    if (raw) {
-      const captured = forLookup ? completeSelectionWord(raw) : raw;
-      if ('path' in captured && captured.start >= 0 && fallback && 'path' in fallback && captured.path === fallback.path &&
+    const captured = selectedView ? await this.readArticleSelection(live, selectedView, forLookup) :
+      active?.getMode() === 'source' && active.editor.getSelection().trim() ? await this.readArticleSelection(null, active, forLookup) : undefined;
+    if (captured) {
+      if (captured.start >= 0 && fallback && 'path' in fallback && captured.path === fallback.path &&
           captured.source === fallback.source && captured.start === fallback.start &&
-          captured.end === fallback.end && captured.text === fallback.text) return fallback;
+          captured.end === fallback.end && captured.text === fallback.text &&
+          captured.originalSelection?.text === fallback.originalSelection?.text &&
+          captured.originalSelection?.start === fallback.originalSelection?.start &&
+          captured.originalSelection?.end === fallback.originalSelection?.end) return fallback;
       return captured;
     }
     if (fallback && ('sidebar' in fallback || fallback.path === this.app.workspace.getActiveFile()?.path)) {
-      return forLookup ? completeSelectionWord(fallback) : fallback;
+      return forLookup ? normalizeWordLookup(fallback) : fallback;
     }
     throw new Error('请先在原文中划选英文。');
   }
@@ -584,7 +590,7 @@ export default class NoteDigestPlugin extends Plugin {
       if (sidebar && action === 'quote') throw new Error('侧栏词语可在「语境解释」中收藏到独立学习笔记。');
       if (sidebar && sidebar.text.length > 12000) throw new Error('请选择 1–12,000 字符的英文内容。');
       const previousGeneration = this.generation;
-      const selected = sidebar ?? await this.readArticleSelection();
+      const selected = sidebar ? normalizeWordLookup(sidebar) : await this.readArticleSelection(undefined, undefined, action === 'digest');
       if (this.stopped || previousGeneration !== this.generation) return;
       if (action === 'digest' && isLongSelection(selected.text)) {
         const generation = ++this.generation; const panel = await this.openPanel();
@@ -593,7 +599,7 @@ export default class NoteDigestPlugin extends Plugin {
       }
       const quote = action === 'quote' && 'path' in selected ? selected : undefined;
       const requestGeneration = this.generation + 1;
-      const result = await this.run(action === 'digest' ? completeSelectionWord(selected) : selected, 'translate');
+      const result = await this.run(selected, 'translate');
       if (quote && result && requestGeneration === this.generation && !this.stopped) {
         const {text: status} = await this.collect(quote, result, 'quote', 'both');
         new Notice(status);

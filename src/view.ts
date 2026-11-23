@@ -80,6 +80,10 @@ export class DigestView extends ItemView {
       el.createEl('p', {text:'已选中较长文字。请选择「Digest 选中段落」或「Digest 全文」。',cls:'note-digest-muted'}); return;
     }
     if (status) el.createEl('p',{text:status,cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+    if (selection.originalSelection && (mode === 'translate' || mode === 'explain')) {
+      el.createEl('p', {text:`选区已调整：原选「${selection.originalSelection.text}」，按「${selection.text}」查词。`,
+        cls:'note-digest-muted note-digest-selection-adjustment'});
+    }
     if (!result) {
       if (!isLongSelection(selection.text)) el.createEl('p',{text:selection.text,cls:'note-digest-original'});
       if (status && !status.startsWith('正在')) this.regenerateSelection(el, selection, mode, '重试');
