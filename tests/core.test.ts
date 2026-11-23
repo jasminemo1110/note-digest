@@ -57,11 +57,29 @@ test('word lookup trims extra spaces, punctuation and one verified clipped initi
     assert.equal(insertTranslation(source, adjusted, '干旱', 'inline'), source.replace('drought. Storms', 'drought（干旱）. Storms'));
   }
   for (const [body, text] of [['Periods of drought.', 'of drought.'], ['A drought. Storms followed.', 'drought. St'],
-    ['A drought. I left.', 'drought. I'], ['Vitamin C matters.', 'Vitamin C'], ['Drought causes stress.', 'Drought c'],
+    ['A drought. I left.', 'drought. I'], ['Vitamin C matters.', 'Vitamin C'],
     ['Is it drought-resistant?', 'drought'], ['CO2 levels', 'CO2']]) {
     const selection = snapshot('a.md', body, text);
     assert.equal(normalizeWordLookup(selection), selection);
   }
+});
+test('lookup keeps a whole first word when the next word is barely selected across a space', () => {
+  const source = '*Certain seeds remain dormant until environmental conditions become favorable.*';
+  const start = source.indexOf('become');
+  for (const text of ['become f', 'become fa']) {
+    const selection = snapshot('a.md', source, text, start);
+    const adjusted = normalizeWordLookup(selection);
+    assert.equal(adjusted.text, 'become');
+    assert.equal(adjusted.originalSelection, selection);
+    assert.equal(adjusted.context, selection.context);
+    assert.equal(insertTranslation(source, adjusted, '变得', 'inline'), source.replace('become ', 'become（变得） '));
+  }
+  for (const text of ['become favorable', 'become fav', 'ecome fa', 'conditions become fa']) {
+    const selection = snapshot('a.md', source, text);
+    assert.equal(normalizeWordLookup(selection), selection);
+  }
+  const particle = snapshot('a.md', 'Turn off the lights.', 'Turn of');
+  assert.equal(normalizeWordLookup(particle), particle);
 });
 test('reading view remaps the corrected word when the excess selection spans Markdown markup', () => {
   const source = '*A drought.* Storms followed.';

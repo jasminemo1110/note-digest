@@ -118,8 +118,14 @@ export function normalizeWordLookup(selection: DigestSelection, locate?: LocateW
   if (second) {
     const separator = context.slice(wordEnd, second.index);
     const clipped = context.slice(second.index, endOffset);
-    if (!edge.test(separator) || !/\p{P}/u.test(separator) ||
-        !/^\p{Script=Latin}$/u.test(clipped) || clipped === second[0]) return selection;
+    if (!edge.test(separator) || clipped === second[0]) return selection;
+    if (/\p{P}/u.test(separator)) {
+      if (!/^\p{Script=Latin}$/u.test(clipped)) return selection;
+    } else if (offset > first.index || !/^\p{Script=Latin}{1,2}$/u.test(clipped) ||
+        !/^\p{Script=Latin}{4}/u.test(second[0])) {
+      // Across spaces, require a whole first word and leave short particles such as “off” alone.
+      return selection;
+    }
   } else if (!edge.test(context.slice(wordEnd, endOffset))) return selection;
 
   if ('sidebar' in selection) return {...selection, text: word, context, contextOffset: wordStart, originalSelection: selection};

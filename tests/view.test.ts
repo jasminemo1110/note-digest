@@ -43,7 +43,7 @@ const selected=snapshot('a.md','A compelling argument.','compelling');
 const explained:DigestResult={translation:'有说服力的',pronunciation:'/kəmˈpelɪŋ/',meaning:'含义',usage:'用法',example:'例句',assessment:{status:'natural',explanation:'不应显示这句话',correction:null}};
 test('both lookup modes describe the actual selection adjustment, separately from the explanation headword', () => {
   const {view,document,calls} = setup();
-  const source = 'A drought ends. It rains. Crops recover.';
+  const source = 'A drought ends. It rains steadily.';
   const adjustment = () => document.querySelector('.note-digest-selection-adjustment')?.textContent;
   const whitespace = normalizeWordLookup(snapshot('a.md', source, 'drought '));
   view.render(whitespace, undefined, '正在请求…', 'translate');
@@ -53,9 +53,10 @@ test('both lookup modes describe the actual selection adjustment, separately fro
   [...document.querySelectorAll('button')].find(button => button.textContent === '语境解释')!.click();
   assert.deepEqual(calls.at(-1), ['run', whitespace, 'explain']);
 
-  const clipped = normalizeWordLookup(snapshot('a.md', source, 'rains. C'));
+  const clipped = normalizeWordLookup(snapshot('a.md', source, 'rains st'));
   view.render(clipped, {...explained, headword:'rain'}, '', 'explain');
-  assert.equal(adjustment(), '选区已调整：原选「rains. C」，按「rains」查词。');
+  assert.equal(adjustment(), '选区已调整：原选「rains st」，按「rains」查词。');
+  assert.equal(document.querySelector('blockquote')?.textContent, source);
   assert.equal(document.querySelector('h3.note-digest-original')?.textContent, 'rain');
   view.render(snapshot('a.md', source, 'rains'), {...explained, headword:'rain'}, '', 'explain');
   assert.equal(adjustment(), undefined);
