@@ -30,7 +30,7 @@ export interface CommonUsage {
   meaning: string;
   example: string;
 }
-export interface WordFamilyEntry { word: string; partOfSpeech: string; meaning: string }
+export interface WordFamilyEntry { word: string; partOfSpeech: string; meaning: string; pronunciation?: string | null }
 export interface DictionarySense { partOfSpeech: string; meaning: string; pronunciation: string | null }
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
@@ -45,6 +45,10 @@ export interface DigestResult {
 
 export function isEnglishWord(text: string): boolean {
   return /^\p{Script=Latin}+(?:['’-]\p{Script=Latin}+)*$/u.test(text.trim().normalize('NFC'));
+}
+
+export function isWordFamilyPronunciation(value: string): boolean {
+  return value.length <= 140 && /^(?:(?:英 |美 )?\/[^/\s\p{C}]+\/)(?:；美 \/[^/\s\p{C}]+\/)?$/u.test(value);
 }
 
 function validateUsageText(value: unknown, maxLength: number, label = '常见用法'): string {
@@ -190,8 +194,13 @@ export function validateResult(value: unknown, action: Action): DigestResult {
         if (!isEnglishWord(word)) throw new Error('AI 同族词拼写字段异常。');
         const partOfSpeech = validateUsageText(entry.partOfSpeech, 30, '同族词');
         const meaning = validateUsageText(entry.meaning, 100, '同族词');
+        const pronunciation = entry.pronunciation === undefined || entry.pronunciation === null
+          ? entry.pronunciation : validateUsageText(entry.pronunciation, 140, '同族词音标');
+        if (pronunciation && !isWordFamilyPronunciation(pronunciation)) throw new Error('AI 同族词音标字段异常。');
         const key = word.toLowerCase();
-        if (!seen.has(key) && validated.headword !== null) validated.wordFamily.push({word, partOfSpeech, meaning});
+        if (!seen.has(key) && validated.headword !== null) {
+          validated.wordFamily.push({word, partOfSpeech, meaning, ...(pronunciation !== undefined && {pronunciation})});
+        }
         seen.add(key);
       }
     }

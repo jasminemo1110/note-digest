@@ -3,13 +3,12 @@ import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
 import { articleBody, digestText, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
-import { addWordVocabulary, markWordNoteCards, wordNoteBody } from './word-vocabulary';
+import { addWordVocabulary, indexWordFamily, markWordNoteCards, WORD_NOTE_FOLDER, wordNoteBody } from './word-vocabulary';
 
 export type Kind = 'word' | 'quote';
 export type SaveTarget = 'source' | 'note' | 'both';
 export const SIDEBAR_NOTE_PATH = 'Digest/侧栏学习笔记.md';
 const SIDEBAR_NOTE_HEADER = '<!-- note-digest:sidebar-words -->';
-const WORD_NOTE_FOLDER = 'Digest/单词学习/';
 const WORD_SOURCES_START = '<!-- note-digest:word-sources -->';
 const WORD_SOURCES_END = '<!-- note-digest:word-sources-end -->';
 export interface SourceDocument { id: string; path: string | null; notePath: string }
@@ -121,7 +120,8 @@ function commonUsagesMarkdown(result: DigestResult): string {
 function wordFamilyMarkdown(result: DigestResult): string {
   if (!result.wordFamily?.length) return '';
   const safe = (value: string) => escapeMarkdown(value).replace(/[%$^:]/g, char => `&#${char.charCodeAt(0)};`);
-  const words = result.wordFamily.map(({word, partOfSpeech, meaning}) => `- **${safe(word)}** · ${safe(partOfSpeech)} · ${safe(meaning)}`);
+  const words = result.wordFamily.map(({word, pronunciation, partOfSpeech, meaning}) =>
+    '- ' + [`**${safe(word)}**`, pronunciation && safe(pronunciation), safe(partOfSpeech), safe(meaning)].filter(Boolean).join(' · '));
   return '\n\n**同族词**\n\n' + words.join('\n');
 }
 function sourceLink(path: string | null): string {
@@ -413,6 +413,41 @@ export class CollectionStore {
     const fileName = name === key && !reserved ? name : `${name.replaceAll('.', '-')}--${id.slice(0, 16)}`;
     return known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
   }
+  private indexFamily(note: string, previous: string | null): Promise<string> {
+    return indexWordFamily(note, previous, async word => (await this.findWordNote(this.data, wordTitle(word))).path);
+  }
+  private async updateWordNote(path: string, transform: (current: string | null) => string): Promise<void> {
+    const before = await this.port.read(path);
+    const after = await this.indexFamily(transform(before), before);
+    await this.port.update(path, current => {
+      if (current !== before) throw new Error('单词笔记刚刚有改动，请重试。');
+      return after;
+    });
+  }
+  indexExistingWordFamilies(paths: string[]): Promise<{updated: number; failed: string[]}> {
+    return this.queue(async () => {
+      let updated = 0;
+      const failed: string[] = [];
+      for (const path of new Set(paths.filter(path => path.startsWith(WORD_NOTE_FOLDER)))) {
+        try {
+          if (this.data.records.some(record => record.pendingExplanation?.copies.some(copy => copy.path === path))) {
+            failed.push(path);
+            continue;
+          }
+          const before = await this.port.read(path);
+          if (before === null) continue;
+          const after = await this.indexFamily(before, before);
+          if (after === before) continue;
+          await this.port.update(path, current => {
+            if (current !== before) throw new Error('单词笔记刚刚有改动，请重试。');
+            return after;
+          });
+          updated++;
+        } catch { failed.push(path); }
+      }
+      return {updated, failed};
+    });
+  }
   private async writeSidebarCard(id: string, title: string, card: string, result?: DigestResult): Promise<{path: string; duplicate: boolean}> {
     const next = structuredClone(this.data);
     const existing = next.sidebarWords?.find(entry => entry.id === id);
@@ -423,7 +458,7 @@ export class CollectionStore {
     }
     const marker = `<!-- note-digest:record:${id} -->`;
     let duplicate = false;
-    await this.port.update(note.path, current => {
+    await this.updateWordNote(note.path, current => {
       const base = prepareWordNote(current, note, title, result);
       duplicate = base.includes(marker);
       if (!duplicate) return appendGroupedCard(base, 'word', '\n\n' + card);
@@ -509,7 +544,7 @@ export class CollectionStore {
   private async removeCopy(path: string, record: LearningRecord, doc: SourceDocument, unchanged = false): Promise<boolean> {
     if (await this.port.read(path) === null) return false;
     let removed = false;
-    await this.port.update(path, current => {
+    const transform = (current: string | null) => {
       if (current === null) throw new Error('文件已移动或删除，请重试。');
       const result = removeSavedRecord(current, record, doc, unchanged);
       removed = result.removed;
@@ -527,7 +562,9 @@ export class CollectionStore {
         return markWordNoteCards(result.text, hasCards);
       }
       return result.text;
-    });
+    };
+    if (path === record.wordNote?.path) await this.updateWordNote(path, transform);
+    else await this.port.update(path, transform);
     return removed;
   }
   undoSave(undo: SaveUndo | string): Promise<RemovalReport | undefined> {
@@ -619,7 +656,7 @@ export class CollectionStore {
             const card = raw.includes(endMarker) ? raw : `${raw.trimEnd()}\n${endMarker}\n`;
             // Persist the destination before copying so an interrupted migration can resume.
             await this.commit(next);
-            await this.port.update(word.path, current => {
+            await this.updateWordNote(word.path, current => {
               const base = prepareArticleWordNote(current, record, doc);
               const existing = savedCardRange(base, record, doc);
               if (!existing) return appendGroupedCard(base, 'word', '\n\n' + card);
@@ -712,8 +749,12 @@ export class CollectionStore {
           if (pending && beforeHash !== saved?.before && beforeHash !== saved?.after) {
             throw new Error('笔记在上次更新后有改动，无法安全继续。');
           }
-          const after = beforeHash === saved?.after ? before : updateCard(before,record,doc,updated);
-          const afterHash = await digestText(after);
+          let after = beforeHash === saved?.after ? before : updateCard(before,record,doc,updated);
+          let afterHash = await digestText(after);
+          if (path === record.wordNote?.path && (!saved || afterHash !== saved.after)) {
+            after = await this.indexFamily(after, before);
+            afterHash = await digestText(after);
+          }
           if (saved && afterHash !== saved.after) throw new Error('无法确认上次更新的内容。');
           plans.push({path,before,after,beforeHash,afterHash});
         } catch (error) {
@@ -792,14 +833,14 @@ export class CollectionStore {
             if (latest === null || articleBody(latest) !== articleBody(selection.source)) throw new Error('原文已变化，请重新选择后重试。');
           }
           let existed = false;
-          await this.port.update(path, content => {
+          if (path === record.wordNote?.path) await this.updateWordNote(path, content => {
+            const base = prepareArticleWordNote(content, record!, doc!);
+            existed = base.includes(`<!-- note-digest:record:${record!.id} -->`);
+            return appendRecord(base, record!, false);
+          });
+          else await this.port.update(path, content => {
             const isSource = path === selection.path;
             if (isSource && (content === null || articleBody(content) !== articleBody(selection.source))) throw new Error('原文已变化，请重新选择后重试。');
-            if (path === record!.wordNote?.path) {
-              const base = prepareArticleWordNote(content, record!, doc!);
-              existed = base.includes(`<!-- note-digest:record:${record!.id} -->`);
-              return appendRecord(base, record!, false);
-            }
             const header = `<!-- note-digest:document:${doc!.id} -->`;
             if (!isSource && content !== null && !content.includes(header)) throw new Error('目标笔记不是本插件的学习笔记，已避免覆盖。');
             const base = content ?? `${header}\n# Note Digest 学习笔记\n\n${sourceLink(doc!.path)}\n`;

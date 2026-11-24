@@ -176,6 +176,9 @@ test('word family validates distinct related headwords and keeps older explanati
   const related = {word:'confirm',partOfSpeech:'动词',meaning:'确认；证实'};
   const wordFamily = [related, {...related,word:'Confirm'}, {...related,word:'confirmation'}];
   assert.deepEqual(validateResult({...base,wordFamily},'explain').wordFamily,[related]);
+  const withIpa = {...related, pronunciation:'英 /kənˈfɜːm/；美 /kənˈfɝːm/'};
+  assert.deepEqual(validateResult({...base,wordFamily:[withIpa]},'explain').wordFamily,[withIpa]);
+  assert.throws(() => validateResult({...base,wordFamily:[{...related,pronunciation:'confirm'}]},'explain'), /同族词音标/);
   assert.deepEqual(validateResult({...base,headword:null,wordFamily},'explain').wordFamily,[]);
   assert.equal(validateResult(base,'explain').wordFamily,undefined);
   assert.throws(() => validateResult({...base,wordFamily:[{...related,word:'confirm\n# separate'}]},'explain'), /同族词/);

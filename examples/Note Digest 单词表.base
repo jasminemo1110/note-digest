@@ -8,6 +8,18 @@ formulas:
   pos: if(note.digest_pos, html(list(note.digest_pos).map(escapeHTML(value)).join("<br>")), "")
   ipa: if(note.digest_ipa, html(list(note.digest_ipa).map(escapeHTML(value)).join("<br>")), "")
   meaning: if(note.digest_meaning, html(list(note.digest_meaning).map(escapeHTML(value)).join("<br>")), "")
+  family: >-
+    if(note.digest_family && note.digest_family_notes,
+      list(note.digest_family).map([value.split("\t"), list(note.digest_family_notes)[index].asFile()])
+        .map([value[0], if(value[1] && value[1].inFolder("Digest/单词学习") &&
+          value[1].properties.digest_has_cards == true &&
+          value[1].properties.digest_word.toString().lower() == value[0][0].lower(), value[1], null)])
+        .map([value[0][0], if(value[0][1], value[0][1],
+          if(value[1] && value[1].properties.digest_ipa,
+            list(value[1].properties.digest_ipa).map(value.replace(/^.* · /, "")).unique().join("；"), "")),
+          value[0][2], value[1]])
+        .map([value[3], [value[0], value[1], value[2]].filter(value).join(" · ")])
+        .map(if(value[0], value[0].asLink(value[1]), value[1])), "")
 properties:
   formula.word:
     displayName: 单词
@@ -17,6 +29,8 @@ properties:
     displayName: 音标
   formula.meaning:
     displayName: 常用义
+  formula.family:
+    displayName: 同族词
 views:
   - type: table
     name: 全部单词
@@ -25,6 +39,7 @@ views:
       - formula.pos
       - formula.ipa
       - formula.meaning
+      - formula.family
     sort:
       - property: digest_word
         direction: ASC
@@ -34,3 +49,4 @@ views:
       formula.pos: 125
       formula.ipa: 200
       formula.meaning: 225
+      formula.family: 420

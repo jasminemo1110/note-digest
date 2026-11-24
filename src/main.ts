@@ -16,6 +16,7 @@ import { CLAUDIAN_VIEW, insertClaudianCallout, readClaudianNote, watchClaudian, 
 import { appendClaudianDraft, getClaudian } from './claudian-draft';
 import { ResultCache } from './result-cache';
 import { changeSectionTranslation } from './section-translation';
+import { WORD_NOTE_FOLDER } from './word-vocabulary';
 
 type CodeMirrorEditor = Editor & {cm?: {posAtDOM(node: Node, offset?: number): number}};
 
@@ -50,6 +51,13 @@ export default class NoteDigestPlugin extends Plugin {
     this.addCommand({ id: 'digest-selection', name: 'Digest 选中内容', callback: () => { void this.capture(); } });
     this.addCommand({ id: 'summarize-article', name: 'Digest 全文', callback: () => { void this.summarizeCurrentArticle(); } });
     this.addCommand({ id: 'save-quote-selection', name: '收藏选中金句到末尾及独立笔记', callback: () => { void this.capture('quote'); } });
+    this.addCommand({ id: 'index-word-families', name: '更新旧单词笔记的同族词列', callback: () => {
+      const paths = this.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(WORD_NOTE_FOLDER)).map(file => file.path);
+      void this.collection.indexExistingWordFamilies(paths).then(({updated, failed}) => {
+        const pending = failed.length ? `\n未能更新 ${failed.length} 篇，可保存编辑后重试。\n${failed.join('\n')}` : '';
+        new Notice(`已更新 ${updated} 篇单词笔记的同族词列。${pending}`);
+      });
+    } });
     this.addCommand({ id: 'split-word-notes', name: '将旧独立学习笔记拆为单词笔记', callback: () => {
       void this.collection.splitWordNotes().then(async ({moved, notes, failures}) => {
         const pending = failures.length ? `\n另有 ${failures.length} 张需要检查，可再运行此命令。${failures.map(failure => '\n' + failure.message).join('')}` : '';

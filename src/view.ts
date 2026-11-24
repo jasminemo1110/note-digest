@@ -147,8 +147,8 @@ export class DigestView extends ItemView {
       if (result.wordFamily?.length) {
         explanation.createEl('h3', {text:'同族词'});
         const family = explanation.createEl('ul');
-        for (const {word, partOfSpeech, meaning} of result.wordFamily) {
-          family.createEl('li', {text:`${word} · ${partOfSpeech} · ${meaning}`, cls:'note-digest-result'});
+        for (const {word, pronunciation, partOfSpeech, meaning} of result.wordFamily) {
+          family.createEl('li', {text:[word, pronunciation, partOfSpeech, meaning].filter(Boolean).join(' · '), cls:'note-digest-result'});
         }
       }
     }

@@ -173,13 +173,13 @@ test('other common usages appear after contextual explanation and are hidden for
   const selection = snapshot('a.md','They issued a statement.','issued');
   const explanation = {...explained,headword:'issue',translation:'发布',example:'issue a statement（发表声明）'};
   view.render(selection,{...explanation,commonUsages:[{partOfSpeech:'名词',meaning:'问题',example:'a serious issue（一个严重的问题）'}],
-    wordFamily:[{word:'issuance',partOfSpeech:'名词',meaning:'发行；发布'}]});
+    wordFamily:[{word:'issuance',pronunciation:'/ˈɪʃuːəns/',partOfSpeech:'名词',meaning:'发行；发布'}]});
   const headings = Array.from(document.querySelectorAll('h3'), heading => heading.textContent);
   assert.ok(headings.indexOf('例句') < headings.indexOf('其他常见用法'));
   assert.equal(document.querySelector('ul li strong')?.textContent,'名词 · 问题');
   assert.match(document.querySelector('ul li')!.textContent!,/a serious issue/);
   assert.ok(headings.indexOf('其他常见用法') < headings.indexOf('同族词'));
-  assert.match(document.body.textContent!,/issuance · 名词 · 发行/);
+  assert.match(document.body.textContent!,/issuance · \/ˈɪʃuːəns\/ · 名词 · 发行/);
   view.render(selection,{...explanation,commonUsages:[]});
   assert.doesNotMatch(document.body.textContent!,/其他常见用法/);
   assert.doesNotMatch(document.body.textContent!,/同族词/);

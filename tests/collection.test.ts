@@ -242,19 +242,23 @@ test('article and sidebar saves reuse a renamed sidebar-only word note', async (
 test('both save paths set vocabulary properties and keep them through append and undo', async () => {
   const f=fixture();
   const lexical = {...result, dictionarySenses:[{partOfSpeech:'形容词',meaning:'有说服力的',pronunciation:'/kəmˈpelɪŋ/'}],
-    wordFamily:[{word:'compel',partOfSpeech:'动词',meaning:'迫使'}]};
+    wordFamily:[{word:'compel',pronunciation:'/kəmˈpel/',partOfSpeech:'动词',meaning:'迫使'}]};
   const first = await f.store.save(select(),lexical,'word','note');
   const wordPath = first.targets[0].path;
   const saved = f.files.get(wordPath)!;
   assert.match(saved, /^---\ndigest_word: "compelling"\ndigest_pos: \["形容词"\]\ndigest_ipa: \["\/kəmˈpelɪŋ\/"\]\ndigest_meaning: \["有说服力的"\]/);
-  assert.match(wordNoteBody(saved), /\*\*同族词\*\*\n\n- \*\*compel\*\* · 动词 · 迫使/);
+  assert.match(wordNoteBody(saved), /\*\*同族词\*\*\n\n- \*\*compel\*\* · \/kəmˈpel\/ · 动词 · 迫使/);
+  assert.ok(saved.includes('digest_family: ' + JSON.stringify(['compel\t/kəmˈpel/\t迫使'])));
+  assert.ok(saved.includes('digest_family_notes: ' + JSON.stringify(['[[Digest/单词学习/compel.md]]'])));
   assert.ok((await f.store.undoSave(first.undo!))?.complete);
   assert.match(f.files.get(wordPath)!, /digest_has_cards: false/);
+  assert.doesNotMatch(f.files.get(wordPath)!, /digest_family:/);
   assert.doesNotMatch(f.files.get(wordPath)!, /<!-- note-digest:record:/);
   const sidebar = await f.store.saveSidebarWord(sidebarWord('A compelling example.'), {...lexical, dictionarySenses:[]});
   assert.equal(sidebar.path,wordPath);
   assert.match(f.files.get(wordPath)!, /digest_has_cards: true/);
   assert.match(f.files.get(wordPath)!, /digest_meaning: \["有说服力的"\]/);
+  assert.ok(f.files.get(wordPath)!.includes('digest_family: ' + JSON.stringify(['compel\t/kəmˈpel/\t迫使'])));
   const newSidebar = await f.store.saveSidebarWord({sidebar:true,text:'issue',context:'An important issue.',contextOffset:13}, {...lexical,
     headword:'issue',dictionarySenses:[{partOfSpeech:'名词',meaning:'问题',pronunciation:'/ˈɪʃuː/'},{partOfSpeech:'动词',meaning:'发布',pronunciation:'/ˈɪʃuː/'}]});
   assert.match(f.files.get(newSidebar.path)!, /digest_meaning: \["名词 · 问题","动词 · 发布"\]/);
@@ -271,6 +275,25 @@ test('indexing existing notes changes only properties and distinguishes common h
   assert.match(indexed,/"名词（\/led\/） · 铅"/);
   assert.match(indexed,/tags: \[words\]\r\ndigest_pos: \["我自己的词性"\]/);
   assert.equal(addWordVocabulary(indexed,'lead',senses),indexed);
+});
+
+test('older family cards backfill the table from saved text and link to a known renamed word note', async () => {
+  const f = fixture();
+  const sidebar = await f.store.saveSidebarWord({sidebar:true,text:'compel',context:'They compel action.',contextOffset:5}, {...result, headword:'compel'});
+  const renamed = 'Digest/单词学习/compel notes.md';
+  f.files.set(renamed, f.files.get(sidebar.path)!);
+  f.files.delete(sidebar.path);
+  await f.store.rename(sidebar.path, renamed);
+  const first = await f.store.save(select(), {...result, wordFamily:[{word:'compel',partOfSpeech:'动词',meaning:'迫使 · 强迫'}]}, 'word', 'note');
+  const wordPath = first.targets[0].path;
+  const old = f.files.get(wordPath)!.replace(/^digest_family(?:_notes)?: .*\n/gm, '');
+  f.files.set(wordPath, old);
+  assert.deepEqual(await f.store.indexExistingWordFamilies([wordPath]), {updated:1, failed:[]});
+  const indexed = f.files.get(wordPath)!;
+  assert.equal(wordNoteBody(indexed), wordNoteBody(old));
+  assert.ok(indexed.includes('digest_family: ' + JSON.stringify(['compel\t\t迫使 · 强迫'])));
+  assert.ok(indexed.includes('digest_family_notes: ' + JSON.stringify([`[[${renamed}]]`])));
+  assert.deepEqual(await f.store.indexExistingWordFamilies([wordPath]), {updated:0, failed:[]});
 });
 
 test('both targets retain full explanation, source body and saved identity', async () => {
