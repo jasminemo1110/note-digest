@@ -46,6 +46,26 @@ function claimsMissingSentence(value: unknown): boolean {
     typeof field === 'string' && MISSING_SENTENCE_CLAIMS.some(claim => claim.test(field)));
 }
 
+function validateExplanation(value: unknown, selection: ContextSelection): DigestResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ResultFormatError();
+  const input = value as Record<string, unknown>;
+  const {commonUsages, wordFamily, dictionarySenses, ...required} = input;
+  const result = validateResult(required, 'explain');
+  if (result.headword === undefined) throw new Error('AI 未返回词头。');
+  for (const field of ['commonUsages', 'wordFamily', 'dictionarySenses'] as const) {
+    if (input[field] === undefined) continue;
+    try {
+      const checked = validateResult({...required, [field]:input[field]}, 'explain');
+      Object.assign(result, {[field]:checked[field]});
+    } catch { /* Supplementary lists can be omitted when invalid. */ }
+  }
+  const expression = contextExpression(input.contextExpression, selection);
+  if (expression) result.contextExpression = expression;
+  return result;
+}
+
+const expressionRule = 'Return contextExpression as one useful multiword collocation or reusable pattern that actually contains the selected occurrence in its sentence, or null if none. It has three short single-line strings: title (canonical English pattern with verbs in base form and placeholders such as someone, something, A or B when useful), meaning (Simplified Chinese gloss for the pattern in this context), and sourceText (the shortest complete contiguous verbatim span realizing the pattern, including the selected text and its original inflection). Copy sourceText exactly from the sentence reconstructed from selectedContext.before + selected + selectedContext.after. For selected "took" in "Years of drift took him from one temporary job to the next.", use title "take someone from A to B" and sourceText "took him from one temporary job to the next". Use null for isolated words, constructions without a confirmed source span, ordinary word combinations with no reusable pattern, or suggestions drawn from other examples or senses.';
+
 export async function digest(selection: ContextSelection, action: Action, key: string,
   requestUrl: Transport, options?: ResultRequest): Promise<DigestResult> {
   const fields = action === 'explain'
@@ -59,7 +79,7 @@ Assess the selected expression as used in its sentence. Distinguish definite spe
 explanation is a nonempty Chinese explanation grounded in the supplied context; identify the offending text and why when there is an error. Do not mistake informal language, quotation, dialect, or style preference for an error. Do not critique unrelated surrounding sentences.
 correction must be a minimal corrected English expression or sentence for incorrect/unnatural; may offer a more formal equivalent for informal, explicitly as an alternative, not an error correction; must be null for natural/uncertain. Do not silently replace the original selected text or translate only a corrected form. Explain original intent and the correction separately.
 usage and example focus on the sense and part of speech used in the supplied context. example contains English and Chinese.
-Return contextExpression as one useful multiword collocation or reusable pattern that actually contains the selected occurrence in its sentence, or null if none. It has three short single-line strings: title (canonical English pattern with verbs in base form and placeholders such as someone, something, A or B when useful), meaning (Simplified Chinese gloss for the pattern in this context), and sourceText (the shortest complete contiguous verbatim span realizing the pattern, including the selected text and its original inflection). Copy sourceText exactly from the sentence reconstructed from selectedContext.before + selected + selectedContext.after. For selected "took" in "Years of drift took him from one temporary job to the next.", use title "take someone from A to B" and sourceText "took him from one temporary job to the next". Use null for isolated words, constructions without a confirmed source span, ordinary word combinations with no reusable pattern, or suggestions drawn from other examples or senses.
+${expressionRule}
 Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, very common senses or parts of speech of the headword, ordered by usefulness in everyday English or general writing. Include a core sense even if the selected usage is less common. Exclude the current sense, collocations that just rephrase it, rare, dated or specialized senses, and senses of unrelated words that share the selected inflected spelling. Prefer one good entry to padding the list. Use [] when there are no clear additions or headword is null. Each entry is an object with three short single-line strings: partOfSpeech (for example 动词 or 名词), meaning (concise Simplified Chinese gloss), and example (one short English example or collocation with its Simplified Chinese translation). For example, if "issue" means "发表、发布" as in "issue a statement", a useful additional entry is 名词 · 问题 · a serious issue（一个严重的问题）. These are AI suggestions, not authoritative judgments.
 Return wordFamily as an array of up to ${MAX_WORD_FAMILY} distinct, common English headwords from the same word family, prioritizing other parts of speech. Each entry has word (English dictionary headword), pronunciation (standard IPA for that word and part of speech, use /.../ or 英 /.../；美 /.../ when they differ, null if unsure), partOfSpeech (Simplified Chinese label), and meaning (short Simplified Chinese gloss). For confirmation, a useful entry is {"word":"confirm","pronunciation":"英 /kənˈfɜːm/；美 /kənˈfɝːm/","partOfSpeech":"动词","meaning":"确认；证实"}. Include a directly related base word or derivative. Exclude inflections, spelling variants, synonyms, and words merely sharing a root with no useful modern connection. Skip obscure derivatives and return [] if headword is null or there are no clear additions.
 Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_SENSES} entries for the headword, considering general English independently of the selected sentence. Each entry has partOfSpeech (brief Simplified Chinese label, such as 名词, 动词, 形容词, or 动词短语), meaning (only the core Simplified Chinese glosses for that part of speech and pronunciation, separated by 、 or ；), and pronunciation (IPA in slashes; when standard variants differ use 英 /.../；美 /.../; use null if unsure). Use separate entries for distinct common parts of speech or distinct pronunciations associated with different meanings, even if the part of speech is the same. Combine related common meanings under the same part of speech and pronunciation. Omit examples, contextual elaboration, rare uses, and derivatives. Include at least the main common entry for a reliable headword; use [] when headword is null.` : '';
@@ -86,41 +106,55 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
     'Transcribe the exact selected word form in its contextual sense. Use standard UK and US pronunciations with the same ' +
     'transcription conventions, and give identical strings when the pronunciations are the same. ' +
     'Set wordPronunciation to null when you cannot reliably transcribe the word.' : '';
+  const offsetRule = ' When selectionOffset is supplied, it identifies the exact occurrence of selected in context (zero-based UTF-16 offset).';
+  const formatRetryPrompt = action === 'explain' ? languageInstruction('en') + ' Return only one JSON object. ' + task + meaningRule +
+    ' Required keys: headword (base English word or expression, or null), translation, meaning, usage, example (all four nonempty strings), ' +
+    'pronunciation (IPA string or null), and assessment (object with status, explanation and correction). ' +
+    'Use an English example with a Chinese translation. Assessment status is natural, informal, unnatural, incorrect or uncertain. ' +
+    'Use a nonempty explanation and set correction to null for natural or uncertain. For unnatural or incorrect, provide a minimal English correction. ' +
+    expressionRule + offsetRule : undefined;
   return requestJson(key, requestUrl, languageInstruction('en') +
-    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules +
-    ' When selectionOffset is supplied, it identifies the exact occurrence of selected in context (zero-based UTF-16 offset).',
+    ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules + offsetRule,
     {...(focus && {selectedContext: focus}), selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
+      if (action === 'explain') return validateExplanation(value, selection);
       const result = validateResult(value, action);
-      if (action === 'explain' && result.headword === undefined) throw new Error('AI 未返回词头。');
-      if (action === 'explain' && (result.wordFamily === undefined || result.wordFamily.some(entry => entry.pronunciation === undefined))) {
-        throw new Error('AI 未返回完整的同族词列表。');
-      }
-      if (action === 'explain' && result.dictionarySenses === undefined) throw new Error('AI 未返回词汇表常用义列表。');
-      if (action === 'explain') {
-        const expression = contextExpression((value as Record<string, unknown>).contextExpression, selection);
-        if (expression) result.contextExpression = expression;
-      }
       if (wordTranslation) result.wordPronunciation = validateWordPronunciation((value as Record<string, unknown>).wordPronunciation);
       return result;
-    }, options, hasSentence ? claimsMissingSentence : undefined);
+    }, options, {formatRetryPrompt, contradictsContext:hasSentence ? claimsMissingSentence : undefined});
 }
 
 const MODEL = 'deepseek-flash';
+class ResultFormatError extends Error {
+  constructor() { super('AI 返回格式异常，请重试。'); }
+}
+class ContextMismatchError extends Error {
+  constructor() { super('AI 未能依据已提供的原句解释，请重试。'); }
+}
 async function requestJson<T>(key: string, requestUrl: Transport, prompt: string, input: object,
-  validate: (value: unknown) => T, options?: ResultRequest, contradictsContext?: (value: unknown) => boolean): Promise<T> {
+  validate: (value: unknown) => T, options?: ResultRequest,
+  recovery?: {formatRetryPrompt?: string; contradictsContext?: (value: unknown) => boolean}): Promise<T> {
   const validated = (value: unknown): T => {
     let result: T;
     try { result = validate(value); }
-    catch { throw new Error('AI 返回格式异常，请重试。'); }
-    if (contradictsContext?.(result)) throw new Error('AI 未能依据已提供的原句解释，请重试。');
+    catch { throw new ResultFormatError(); }
+    if (recovery?.contradictsContext?.(result)) throw new ContextMismatchError();
     return result;
   };
   const request = async () => {
-    const value = await fetchJson(key, requestUrl, prompt, input);
-    if (!contradictsContext?.(value)) return value;
-    return fetchJson(key, requestUrl, prompt +
-      ' The sentence containing the selection is already in the source data.' +
-      ' Re-read that sentence and explain the selected form in it. If the wording still permits multiple senses, explain why.', input);
+    try {
+      const value = await fetchJson(key, requestUrl, prompt, input);
+      return recovery?.formatRetryPrompt ? validated(value) : value;
+    } catch (error) {
+      if (error instanceof ResultFormatError && recovery?.formatRetryPrompt) {
+        return fetchJson(key, requestUrl, recovery.formatRetryPrompt, input);
+      }
+      if (error instanceof ContextMismatchError) {
+        return fetchJson(key, requestUrl, prompt +
+          ' The sentence containing the selection is already in the source data.' +
+          ' Re-read that sentence and explain the selected form in it. If the wording still permits multiple senses, explain why.', input);
+      }
+      throw error;
+    }
   };
   if (options?.cache) return options.cache.run([MODEL, prompt, input], validated, request, options);
   options?.onRequest?.();
@@ -147,7 +181,7 @@ async function fetchJson(key: string, requestUrl: Transport, prompt: string, inp
     const choice = data?.choices?.[0];
     if (choice?.finish_reason !== 'stop' || typeof choice.message?.content !== 'string' || choice.message.content.length > 50000) throw new Error('AI 结果不完整，请重试。');
     try { return JSON.parse(choice.message.content); }
-    catch { throw new Error('AI 返回格式异常，请重试。'); }
+    catch { throw new ResultFormatError(); }
   } catch (error) {
     // Never surface transport bodies, headers or URLs in errors.
     if (error instanceof Error && /^(请求超时|密钥无效|请求过于|AI 服务|AI 结果|AI 返回)/.test(error.message)) throw error;

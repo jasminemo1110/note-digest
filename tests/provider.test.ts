@@ -103,6 +103,48 @@ test('inflected lookup teaches the base headword without changing the quoted sou
     json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(missingHeadword)}}]}})), /AI 返回格式异常/);
 });
 
+test('a malformed vocabulary supplement does not discard the explanation for a phrase', async () => {
+  const selection = snapshot('list.md', 'Several volunteers took part in a practice session.', 'took part ');
+  const core = {headword:'take part', translation:'参加', meaning:'took part 是 take part 的过去式。',
+    usage:'take part in + 活动', example:'She took part in the workshop. 她参加了研讨会。', pronunciation:'/teɪk pɑːt/',
+    assessment:{status:'natural', explanation:'表达自然。', correction:null}};
+  const dictionarySenses = [{partOfSpeech:'动词短语', meaning:'参加', pronunciation:'/teɪk pɑːt/'}];
+  const contextExpression = {title:'take part in something', meaning:'参加某项活动', sourceText:'took part in a practice session'};
+  const response = {...core, dictionarySenses, contextExpression,
+    wordFamily:[{word:'take part', pronunciation:'/teɪk pɑːt/', partOfSpeech:'动词短语', meaning:'参加'}]};
+  let calls = 0;
+  const answer = await digest(selection, 'explain', credential, async () => {
+    calls++;
+    return {status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(response)}}]}};
+  });
+  assert.deepEqual(answer, {...core, dictionarySenses, contextExpression});
+  assert.equal(calls, 1);
+});
+
+test('an unusable explanation retries once with a shorter JSON request using the same source', async () => {
+  const selection = snapshot('list.md', 'Several volunteers took part in a practice session.', 'took part ');
+  const core = {headword:'take part', translation:'参加', meaning:'took part 是 take part 的过去式。',
+    usage:'take part in + 活动', example:'She took part in the workshop. 她参加了研讨会。', pronunciation:'/teɪk pɑːt/',
+    assessment:{status:'natural', explanation:'表达自然。', correction:null}};
+  for (const first of ['invalid JSON', JSON.stringify({...core, usage:null})]) {
+    for (const recovered of [true, false]) {
+      const requests: {system:string; user:string}[] = [];
+      const result = digest(selection, 'explain', credential, async ({body}) => {
+        const [system,user] = JSON.parse(body as string).messages;
+        requests.push({system:system.content,user:user.content});
+        const content = requests.length === 1 || !recovered ? first : JSON.stringify(core);
+        return {status:200, json:{choices:[{finish_reason:'stop',message:{content}}]}};
+      });
+      if (recovered) assert.deepEqual(await result,core);
+      else await assert.rejects(result,/AI 返回格式异常/);
+      assert.equal(requests.length,2);
+      assert.equal(requests[1].user,requests[0].user);
+      assert.match(requests[1].system,/Required keys/);
+      assert.doesNotMatch(requests[1].system,/Return wordFamily|Return dictionarySenses/);
+    }
+  }
+});
+
 test('context explanation anchors repeated words to the selected sentence and retries a false missing-sentence claim', async () => {
   const sentence = 'Years of drift took him from one temporary job to the next.';
   const source = '## drift\n\n- **n. 漂泊** · ' + sentence + '\n  多年的漂泊让他辗转于一份又一份临时工作。\n\nThey took part in a study.';
