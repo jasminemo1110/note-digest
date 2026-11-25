@@ -80,7 +80,7 @@ function beforeLearningSection(source: string): string {
   const afterMarker = boundary + LEARNING_BOUNDARY.length;
   // Content can be inserted between the hidden marker and the generated heading in a rendered editor.
   const tail = source.slice(afterMarker);
-  const heading = /^## Note Digest 学习笔记[ \t]*\r?\n[ \t\r\n]*(?=<!-- note-digest:(?:group:(?:word|quote)|record:[\w-]+) -->)/m.exec(tail);
+  const heading = /^## Note Digest 学习笔记[ \t]*\r?\n[ \t\r\n]*(?=<!-- note-digest:(?:group:(?:word|expression|quote)|record:[\w-]+) -->)/m.exec(tail);
   if (heading && tail.slice(0, heading.index).trim()) {
     const hiddenMarker = LEARNING_BOUNDARY.replace(/[^\r\n]/g, ' ');
     return source.slice(0, boundary) + hiddenMarker + tail.slice(0, heading.index);
@@ -104,13 +104,13 @@ export async function digestText(text: string): Promise<string> {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function normalizeCollectionRange(source: string, offset: number, text: string, kind: 'word' | 'quote') {
-  const edges = kind === 'word' ? /[\s.,!?;:()[\]{}"'“”‘’，。！？；：（）【】—–]/u : /\s/u;
+export function normalizeCollectionRange(source: string, offset: number, text: string, wordSelection: boolean) {
+  const edges = wordSelection ? /[\s.,!?;:()[\]{}"'“”‘’，。！？；：（）【】—–]/u : /\s/u;
   let start = offset;
   let end = offset + text.length;
   while (start < end && edges.test(source[start])) start++;
   while (end > start && edges.test(source[end - 1])) end--;
-  if (kind === 'word' && start < end) {
+  if (wordSelection && start < end) {
     const word = /[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*/gu;
     const words: {start: number; end: number}[] = [];
     word.lastIndex = start;

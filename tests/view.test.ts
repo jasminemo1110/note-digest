@@ -168,6 +168,35 @@ test('explanation hides insertion and natural assessment but still saves a full 
   view.render(selected,{...explained,assessment:{status:'incorrect',explanation:'有语法问题',correction:'corrected expression'}});
   assert.ok(document.body.textContent!.includes('有语法问题'));assert.ok(document.body.textContent!.includes('corrected expression'));
 });
+test('expressions can be collected from translation or explanation and appear in their own group', async () => {
+  const {view,document,calls,plugin}=setup();
+  const selection = snapshot('a.md', 'She took a deep breath.', 'took a deep breath');
+  const translation = {translation:'深吸了一口气'};
+  const explanation = {...explained,...translation,headword:'take a deep breath'};
+  const category = () => document.querySelector<HTMLSelectElement>('[aria-label="收藏分类"]')!;
+  const save = () => document.querySelector<HTMLButtonElement>('.note-digest-save button')!.onclick!(new (domEvent(document))('click') as any);
+
+  view.render(selection,translation);
+  assert.deepEqual([...category().options].map(option => option.value), ['expression','quote']);
+  assert.equal(category().value, 'quote');
+  category().value = 'expression';
+  plugin.collection.recordsFor=(() => [{id:'saved',kind:'expression',anchor:{text:selection.text},result:translation,
+    active:true,savedTo:[selection.path]}]) as any;
+  await save();
+  assert.deepEqual(calls.at(-1), ['collect',selection,translation,'expression','both']);
+  assert.equal(document.querySelector('.note-digest-collection h4')?.textContent,'表达');
+  assert.equal(document.querySelector('.note-digest-saved-row p')?.textContent,selection.text);
+
+  view.render(selection,explanation);
+  assert.deepEqual([...category().options].map(option => option.value), ['word','expression','quote']);
+  assert.equal(category().value,'expression');
+  await save();
+  assert.deepEqual(calls.at(-1), ['collect',selection,explanation,'expression','both']);
+  view.render(selected,explained);
+  category().value = 'expression';
+  await save();
+  assert.deepEqual(calls.at(-1), ['collect',selected,explained,'expression','both']);
+});
 test('other common usages appear after contextual explanation and are hidden for an empty list', () => {
   const {view,document} = setup();
   const selection = snapshot('a.md','They issued a statement.','issued');

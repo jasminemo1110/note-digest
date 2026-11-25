@@ -5,7 +5,8 @@ import { shortContext } from './reading-actions';
 import { articleBody, digestText, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
 import { addWordVocabulary, indexWordFamily, markWordNoteCards, WORD_NOTE_FOLDER, wordNoteBody } from './word-vocabulary';
 
-export type Kind = 'word' | 'quote';
+export const COLLECTION_LABELS = {word: '单词', expression: '表达', quote: '金句'} as const;
+export type Kind = keyof typeof COLLECTION_LABELS;
 export type SaveTarget = 'source' | 'note' | 'both';
 export const SIDEBAR_NOTE_PATH = 'Digest/侧栏学习笔记.md';
 const SIDEBAR_NOTE_HEADER = '<!-- note-digest:sidebar-words -->';
@@ -42,13 +43,19 @@ export function collectionFeedback(report: SaveReport): {text: string; duplicate
   }
   if (report.record.unlocated && saved) return {text: '已保存到独立学习笔记', duplicate: false};
   if (saved) return {text: '已保存', duplicate: false};
-  return {text: report.record.kind === 'word' ? '本词已收藏' : '此金句已收藏', duplicate: true};
+  const kind = report.record.kind;
+  return {text: kind === 'word' ? '本词已收藏' : `此${COLLECTION_LABELS[kind]}已收藏`, duplicate: true};
 }
 const ID = /^[a-zA-Z0-9-]{1,80}$/;
 const HASH = /^[0-9a-f]{64}$/;
 function validPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1000 && !/[\r\n\0\\]/.test(value) &&
     !value.startsWith('/') && !value.split('/').some(part => part === '..' || part === '.' || !part) && value.endsWith('.md');
+}
+function validateCardResult(result: DigestResult, kind: Kind): DigestResult {
+  const expressionExplanation = kind === 'expression' &&
+    (result?.meaning !== undefined || result?.usage !== undefined || result?.example !== undefined);
+  return validateResult(result, kind === 'word' || expressionExplanation ? 'explain' : 'translate');
 }
 /** Fail closed rather than silently replacing damaged or future collections. */
 export function loadCollection(input: unknown): CollectionData {
@@ -73,7 +80,7 @@ export function loadCollection(input: unknown): CollectionData {
     validPath(word.path) && !paths.has(word.path) && !notes.has(word.path) && word.path !== SIDEBAR_NOTE_PATH;
   for (const record of records) {
     if (!record || typeof record.id !== 'string' || !ID.test(record.id) || recordIds.has(record.id) || !ids.has(record.documentId) ||
-        !['word', 'quote'].includes(record.kind) || typeof record.active !== 'boolean' || (record.deletionPending !== undefined && typeof record.deletionPending !== 'boolean') || !Array.isArray(record.savedTo) || !record.savedTo.every(validPath) || typeof record.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(record.createdAt) ||
+        typeof record.kind !== 'string' || !Object.hasOwn(COLLECTION_LABELS, record.kind) || typeof record.active !== 'boolean' || (record.deletionPending !== undefined && typeof record.deletionPending !== 'boolean') || !Array.isArray(record.savedTo) || !record.savedTo.every(validPath) || typeof record.createdAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(record.createdAt) ||
         !record.anchor || typeof record.anchor.block !== 'string' || record.anchor.block.length > 24000 ||
         typeof record.anchor.text !== 'string' || !record.anchor.text.trim() || record.anchor.text.length > 12000 ||
         !Number.isInteger(record.anchor.offset) || record.anchor.offset < 0 ||
@@ -100,7 +107,7 @@ export function loadCollection(input: unknown): CollectionData {
     }
     if (record.wordNote !== undefined && (record.kind !== 'word' || !validWordNote(record.wordNote))) throw new Error('单词笔记数据损坏。');
     recordIds.add(record.id);
-    record.result = validateResult(record.result, record.kind === 'word' ? 'explain' : 'translate');
+    record.result = validateCardResult(record.result, record.kind);
   }
   const sidebarWords = data.sidebarWords as SidebarWord[] | undefined;
   if (sidebarWords !== undefined && (!Array.isArray(sidebarWords) || sidebarWords.some(card => !card || typeof card.id !== 'string' ||
@@ -190,12 +197,14 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
 }
 function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = false, context?: string): string {
   const result = record.result;
-  const prefix = record.kind === 'quote' ? '金句：' : historicalWordPrefix ? '词语：' : '';
+  const prefix = record.kind === 'quote' ? '金句：' : historicalWordPrefix && record.kind === 'word' ? '词语：' : '';
   const headword = record.kind === 'word' ? explanationHeadword(record.anchor.text, result) : record.anchor.text;
   let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${prefix}${escapeMarkdown(headword).replace(/\r?\n/g, ' ')}`;
-  if (record.kind === 'word') text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
+  if (record.kind === 'word' || (record.kind === 'expression' && result.pronunciation)) {
+    text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
+  }
   text += `\n\n${quoted(result.translation)}`;
-  if (record.kind === 'word') {
+  if (record.kind !== 'quote') {
     if (headword !== record.anchor.text) text += `\n\n**原文词形** ${escapeMarkdown(record.anchor.text)}`;
     text += `\n\n**原始语境**\n\n${quoted(context ?? record.originalContext ?? shortContext(record.anchor))}`;
     for (const [label, value] of [['语境含义', result.meaning], ['用法', result.usage], ['例句', result.example]]) {
@@ -235,7 +244,7 @@ function savedCardRange(current: string, record: LearningRecord, doc: SourceDocu
     }
     return {start, end: finish};
   }
-  if (unchanged) throw new Error('卡片缺少结束标记，已保留内容。');
+  if (unchanged || record.kind === 'expression') throw new Error('卡片缺少结束标记，已保留内容。');
   // Historical cards have no closing marker. Delete only exact known output, leaving manual additions untouched.
   const candidates = [groupedRecordMarkdown(record,true), groupedRecordMarkdown(record), previousRecordMarkdown(record,doc), legacyRecordMarkdown(record,doc)];
   const oldLink = /^\n### [^\r\n]+\n\n\[返回原文\]\(\/([^\r\n)]+)\) · \d{4}-\d{2}-\d{2}\n/.exec(current.slice(start + marker.length))?.[1];
@@ -314,7 +323,7 @@ function contextualAnchor(selection: {text: string; context: string; contextOffs
 
 async function matchingRecords(data: CollectionData, selection: SelectionSnapshot, kind: Kind, doc: SourceDocument) {
   const body = articleBody(selection.source);
-  const range = normalizeCollectionRange(body, selection.start, selection.text, kind);
+  const range = normalizeCollectionRange(body, selection.start, selection.text, kind === 'word');
   const anchor = makeAnchor(body, range.offset, range.text);
   if (locateAnchor(body, anchor) === null) {
     anchor.location = {start: range.offset, digest: await digestText(body)};
@@ -325,7 +334,7 @@ async function matchingRecords(data: CollectionData, selection: SelectionSnapsho
     const position = anchor.location && previous.location?.digest === anchor.location.digest
       ? previous.location.start : locateAnchor(body, previous);
     if (position === null) return false;
-    const normalized = normalizeCollectionRange(body, position, previous.text, kind);
+    const normalized = normalizeCollectionRange(body, position, previous.text, kind === 'word');
     return normalized.offset === range.offset && normalized.text === range.text;
   });
   return {anchor,matches};
@@ -341,7 +350,7 @@ function appendGroupedCard(current: string, kind: Kind, card: string): string {
   const {start, end} = groupTokens(kind);
   const startIndex = current.indexOf(start); const endIndex = current.indexOf(end);
   if (startIndex < 0 && endIndex < 0) {
-    return current + `\n\n${start}\n### ${kind === 'word' ? '单词' : '金句'}\n` + card + `\n${end}\n`;
+    return current + `\n\n${start}\n### ${COLLECTION_LABELS[kind]}\n` + card + `\n${end}\n`;
   }
   if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
   return current.slice(0, endIndex) + card + '\n' + current.slice(endIndex);
@@ -360,6 +369,7 @@ function prepareArticleWordNote(current: string | null, record: LearningRecord, 
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
   let text = current; let count = 0;
   for (const record of records) {
+    if (record.kind === 'expression') continue;
     if (text.includes(recordMarkdown(record, doc))) continue;
     const closing = `<!-- note-digest:record-end:${record.id} -->\n`;
     const grouped = groupedRecordMarkdown(record, true);
@@ -789,7 +799,7 @@ export class CollectionStore {
       if (!validPath(selection.path) || this.isLearningNote(selection.path)) throw new Error('请选择原文章，不要收藏生成的学习笔记。');
       const current = await this.port.read(selection.path);
       if (current === null || articleBody(current) !== articleBody(selection.source)) throw new Error('原文已修改或移动，请重新选择后收藏。');
-      const result = validateResult(input, kind === 'word' ? 'explain' : 'translate');
+      const result = validateCardResult(input, kind);
       const next = structuredClone(this.data);
       let doc = next.documents.find(doc => doc.path === selection.path);
       if (!doc) {

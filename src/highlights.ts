@@ -1,7 +1,7 @@
 import { articleBody, digestText, locateAnchor } from './anchors';
-import type { LearningRecord } from './collection';
+import { COLLECTION_LABELS, type Kind, type LearningRecord } from './collection';
 import { mapTableRanges, type RenderedSection } from './markdown-source';
-export interface HighlightRange { start: number; end: number; kind: 'word' | 'quote' }
+export interface HighlightRange { start: number; end: number; kind: Kind }
 /** Source offsets constrain highlights to the actual rendered source section, never exports. */
 export function highlightRanges(source: string, lineStart: number, lineEnd: number, visible: string, records: LearningRecord[]): HighlightRange[] {
   const lines = source.split('\n');
@@ -74,8 +74,11 @@ export function applyHighlights(element: HTMLElement, ranges: HighlightRange[]):
       const piece = value.slice(left, right);
       if (covered.length) {
         const mark = doc.createElement('mark'); mark.className = 'note-digest-highlight';
-        mark.dataset.kind = covered.some(range => range.kind === 'word') ? 'word' : 'quote';
-        mark.title = mark.dataset.kind === 'word' ? '已收藏词语' : '已收藏金句'; mark.textContent = piece; fragment.append(mark);
+        const kind = covered.some(range => range.kind === 'word') ? 'word' :
+          covered.some(range => range.kind === 'expression') ? 'expression' : 'quote';
+        mark.dataset.kind = kind;
+        mark.title = `已收藏${kind === 'word' ? '词语' : COLLECTION_LABELS[kind]}`;
+        mark.textContent = piece; fragment.append(mark);
       } else fragment.append(doc.createTextNode(piece));
     }
     text.replaceWith(fragment);

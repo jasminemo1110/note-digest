@@ -20,6 +20,41 @@ function fixture(initial?: CollectionData) {
   return {files, store, port, durable: () => durable, fail: (value: string) => failPath=value, failPersist:(value:boolean) => persistFails=value};
 }
 const select = () => snapshot(path, source, 'compelling', source.indexOf('compelling'));
+test('expression cards keep their context and available explanation through save, reload, and undo', async () => {
+  const f = fixture();
+  const phrase = snapshot(path, source, 'compelling argument');
+  const explanation = {...result, translation:'令人信服的论据', headword:'compelling argument'};
+  const saved = await f.store.save(phrase, explanation, 'expression', 'both');
+  assert.deepEqual(saved.targets.map(target => target.ok), [true,true]);
+  assert.match(saved.targets[1].path, /^Digest\/文章学习\//);
+  assert.equal(saved.record.wordNote, undefined);
+  assert.equal(locateAnchor(source,saved.record.anchor), phrase.start);
+  for (const target of saved.targets) {
+    const note = f.files.get(target.path)!;
+    assert.match(note, /### 表达\n[\s\S]*#### compelling argument\n/);
+    assert.match(note, /\*\*原始语境\*\*\n\n> A compelling argument/);
+    assert.match(note, /\*\*用法\*\*[\s\S]*另一个搭配/);
+  }
+  assert.equal(articleBody(f.files.get(path)!), source);
+
+  const loaded = loadCollection(f.durable());
+  assert.equal(loaded.records[0].result.usage,explanation.usage);
+  const restarted = new CollectionStore(loaded, f.port, () => crypto.randomUUID());
+  const duplicate = await restarted.save(phrase, explanation, 'expression', 'both');
+  assert.deepEqual(collectionFeedback(duplicate), {text:'此表达已收藏',duplicate:true});
+  const quote = await restarted.save(phrase, explanation, 'quote', 'note');
+  assert.notEqual(quote.record.id, saved.record.id);
+  const otherPhrase = snapshot(path, source, 'compelling story');
+  const translation = await restarted.save(otherPhrase, {translation:'引人入胜的故事'}, 'expression', 'both');
+  assert.deepEqual(loadCollection(f.durable()).records.find(record => record.id === translation.record.id)?.result,
+    {translation:'引人入胜的故事'});
+  assert.equal((await restarted.undoSave(translation.undo!))?.complete, true);
+  for (const target of saved.targets) {
+    const note = f.files.get(target.path)!;
+    assert.match(note, /#### compelling argument\n/);
+    assert.doesNotMatch(note, /#### compelling story\n/);
+  }
+});
 test('a new learning marker belongs below its heading and keeps a section moved above it in the body', async () => {
   const f = fixture();
   await f.store.save(select(), result, 'word', 'source');

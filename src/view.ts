@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import { articleFinished, articlePartIsLocated, MAX_SECTIONS, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
-import type { Kind, SaveTarget, SaveUndo } from './collection';
+import { COLLECTION_LABELS, type Kind, type SaveTarget, type SaveUndo } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
@@ -456,13 +456,14 @@ export class DigestView extends ItemView {
     }
     target.createEl('option',{value:'note',text:'只有独立学习笔记'});
     target.value=located ? 'both' : 'note';
-    let kind: HTMLSelectElement | undefined;
+    const label=el.createEl('label',{text:'分类 '});
+    const category=label.createEl('select',{attr:{'aria-label':'收藏分类'}});
     if (mode==='explain') {
-      const label=el.createEl('label',{text:'分类 '});
-      kind=label.createEl('select',{attr:{'aria-label':'收藏分类'}});
-      kind.createEl('option',{value:'word',text:'单词（完整解释）'});
-      kind.createEl('option',{value:'quote',text:'金句与译文'});
+      category.createEl('option',{value:'word',text:'单词（完整解释）'});
     }
+    category.createEl('option',{value:'expression',text:COLLECTION_LABELS.expression});
+    category.createEl('option',{value:'quote',text:'金句与译文'});
+    category.value = mode === 'explain' ? (isEnglishWord(selection.text) ? 'word' : 'expression') : 'quote';
     const save=el.createEl('button',{text:'保存',cls:'mod-cta'});
     const feedbackArea=el.createDiv({cls:'note-digest-save-feedback'});
     const message=feedbackArea.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
@@ -480,7 +481,7 @@ export class DigestView extends ItemView {
       save.disabled=true;message.textContent='正在保存…';
       message.classList.remove('note-digest-save-duplicate');
       try {
-        const feedback = await this.plugin.collect(selection,result,(kind?.value ?? 'quote') as Kind,target.value as SaveTarget);
+        const feedback = await this.plugin.collect(selection,result,category.value as Kind,target.value as SaveTarget);
         message.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
         message.textContent = feedback.text;
         setUndo(feedback.undo);
@@ -506,10 +507,11 @@ export class DigestView extends ItemView {
         refreshCollection();
       }
     };
-    if (mode === 'explain' && kind && located) {
+    if (mode === 'explain' && located) {
       const updateArea = el.createDiv({cls:'note-digest-actions'});
-      const category = kind;
-      category.onchange = () => { updateArea.style.display = category.value === 'word' ? '' : 'none'; };
+      const showWordUpdate = () => { updateArea.style.display = category.value === 'word' ? '' : 'none'; };
+      category.onchange = showWordUpdate;
+      showWordUpdate();
       const showUpdate = async () => {
         const matches = await this.plugin.collection.matchingWords(selection);
         if (!el.isConnected) return;
@@ -578,7 +580,7 @@ export class DigestView extends ItemView {
       const open=list.createEl('button',{text:'打开独立学习笔记'});
       open.onclick=()=>{void this.app.workspace.openLinkText(notePath,'',false);};
     }
-    for(const [kind,title] of [['word','单词'],['quote','金句']] as const) {
+    for(const [kind,title] of Object.entries(COLLECTION_LABELS)) {
       const items=records.filter(record=>record.kind===kind);if(!items.length)continue;
       list.createEl('h4',{text:title});
       for(const record of items) {
