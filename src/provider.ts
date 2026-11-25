@@ -21,7 +21,37 @@ export function languageInstruction(language: SourceLanguage): string {
   if (language !== 'en') throw new Error('日语将在第二版提供。');
   return 'Explain English in Simplified Chinese. Preserve the selected expression and interpret its actual context.';
 }
-export async function digest(selection: Pick<DigestSelection, 'text' | 'context' | 'contextOffset'>, action: Action, key: string,
+
+type ContextSelection = Pick<DigestSelection, 'text' | 'context' | 'contextOffset'>;
+
+function selectedContext({text, context, contextOffset}: ContextSelection) {
+  const offset = contextOffset ?? context.indexOf(text);
+  if (offset < 0 || context.slice(offset, offset + text.length) !== text ||
+      (contextOffset === undefined && offset !== context.lastIndexOf(text))) return;
+  const sentences = new Intl.Segmenter('en', {granularity:'sentence'}).segment(context);
+  const first = sentences.containing(offset);
+  const last = sentences.containing(offset + text.length - 1);
+  if (!first || !last || last.index + last.segment.length - first.index > 500) return;
+  return {
+    before: context.slice(first.index, offset).trimStart(),
+    after: context.slice(offset + text.length, last.index + last.segment.length).trimEnd(),
+  };
+}
+
+const MISSING_SENTENCE_CLAIMS = [
+  /(?:原句|所在的?句子)(?:并)?(?:未|没(?:有)?)(?:被)?(?:给出|提供|出现)/u,
+  /(?:未|没(?:有)?)(?:给出|提供|出现|包含)(?:完整的?)?原句/u,
+  /(?:未|没(?:有)?)(?:给出|提供|出现|包含)[^，。！？；,\n]{0,40}所在的?句子/u,
+  /(?:缺少|缺乏)(?:完整的?)?原句|原句缺失/u,
+];
+
+function claimsMissingSentence(value: unknown): boolean {
+  const result = value as Partial<DigestResult> | null;
+  return [result?.meaning, result?.assessment?.explanation].some(field =>
+    typeof field === 'string' && MISSING_SENTENCE_CLAIMS.some(claim => claim.test(field)));
+}
+
+export async function digest(selection: ContextSelection, action: Action, key: string,
   requestUrl: Transport, options?: ResultRequest): Promise<DigestResult> {
   const fields = action === 'explain'
     ? 'translation, meaning (contextual sense and uncertainty), usage (natural usage), example (English example and Chinese translation)'
@@ -43,8 +73,16 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
     ? 'The "translation" field must be a concise Simplified Chinese equivalent of the headword in the selected context, or of the exact selected text when headword is null. Never translate the surrounding sentence or heading when a word or phrase is selected. Keep the original inflection and grammatical role in "meaning".'
     : 'The "translation" field must be a Simplified Chinese equivalent of the exact text in "selected". Use "context" only to choose the intended sense and wording for this field. If "selected" is a word or phrase, give a word or phrase equivalent. Never translate the surrounding sentence or heading, or add subjects, objects, actions, or claims that come only from "context". For example, with selected "grip" in "The firm’s grip on the market weakens", translation is "牢牢控制".';
   const meaningRule = action === 'explain'
-    ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the word or expression being explained.'
+    ? ' Put contextual elaboration in "meaning" and keep "translation" scoped to the word or expression being explained.' +
+      ' When selectedContext is supplied, read selectedContext.before + selected + selectedContext.after first.' +
+      ' This is the exact selected occurrence and its nearby wording. Treat Markdown formatting and vocabulary labels as presentation.' +
+      ' Ground meaning, usage, example and assessment in the wording around this occurrence. Use the broader context only as supporting evidence.' +
+      ' When the sentence is present but the sense is ambiguous, explain the ambiguity with reference to the wording.'
     : '';
+  const focus = action === 'explain' ? selectedContext(selection) : undefined;
+  const focusedText = focus ? focus.before + selection.text + focus.after : selection.text;
+  const hasSentence = action === 'explain' && /[.!?。！？]["'”’\])}]*$/u.test(focusedText.trimEnd()) &&
+    (focusedText.match(/\p{Script=Latin}+/gu)?.length ?? 0) > 1;
   const wordTranslation = action === 'translate' && isEnglishWord(selection.text);
   const wordTranslationRules = wordTranslation ?
     ' Keep the Chinese gloss on a single line. ' +
@@ -55,7 +93,7 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
   return requestJson(key, requestUrl, languageInstruction('en') +
     ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules +
     ' When selectionOffset is supplied, it identifies the exact occurrence of selected in context (zero-based UTF-16 offset).',
-    {selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
+    {...(focus && {selectedContext: focus}), selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
       const result = validateResult(value, action);
       if (action === 'explain' && result.headword === undefined) throw new Error('AI 未返回词头。');
       if (action === 'explain' && (result.wordFamily === undefined || result.wordFamily.some(entry => entry.pronunciation === undefined))) {
@@ -64,17 +102,26 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
       if (action === 'explain' && result.dictionarySenses === undefined) throw new Error('AI 未返回词汇表常用义列表。');
       if (wordTranslation) result.wordPronunciation = validateWordPronunciation((value as Record<string, unknown>).wordPronunciation);
       return result;
-    }, options);
+    }, options, hasSentence ? claimsMissingSentence : undefined);
 }
 
 const MODEL = 'deepseek-flash';
 async function requestJson<T>(key: string, requestUrl: Transport, prompt: string, input: object,
-  validate: (value: unknown) => T, options?: ResultRequest): Promise<T> {
+  validate: (value: unknown) => T, options?: ResultRequest, contradictsContext?: (value: unknown) => boolean): Promise<T> {
   const validated = (value: unknown): T => {
-    try { return validate(value); }
+    let result: T;
+    try { result = validate(value); }
     catch { throw new Error('AI 返回格式异常，请重试。'); }
+    if (contradictsContext?.(result)) throw new Error('AI 未能依据已提供的原句解释，请重试。');
+    return result;
   };
-  const request = () => fetchJson(key, requestUrl, prompt, input);
+  const request = async () => {
+    const value = await fetchJson(key, requestUrl, prompt, input);
+    if (!contradictsContext?.(value)) return value;
+    return fetchJson(key, requestUrl, prompt +
+      ' The sentence containing the selection is already in the source data.' +
+      ' Re-read that sentence and explain the selected form in it. If the wording still permits multiple senses, explain why.', input);
+  };
   if (options?.cache) return options.cache.run([MODEL, prompt, input], validated, request, options);
   options?.onRequest?.();
   return validated(await request());
