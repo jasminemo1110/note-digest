@@ -1,4 +1,4 @@
-import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, isEnglishWord, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, isEnglishWord, isExpressionTitle, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
 import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
@@ -55,7 +55,11 @@ function validPath(value: unknown): value is string {
 function validateCardResult(result: DigestResult, kind: Kind): DigestResult {
   const expressionExplanation = kind === 'expression' &&
     (result?.meaning !== undefined || result?.usage !== undefined || result?.example !== undefined);
-  return validateResult(result, kind === 'word' || expressionExplanation ? 'explain' : 'translate');
+  const card = validateResult(result, kind === 'word' || expressionExplanation ? 'explain' : 'translate');
+  if (kind === 'expression' && !expressionExplanation && isExpressionTitle(result.headword)) {
+    card.headword = result.headword.trim();
+  }
+  return card;
 }
 /** Fail closed rather than silently replacing damaged or future collections. */
 export function loadCollection(input: unknown): CollectionData {
@@ -823,8 +827,12 @@ export class CollectionStore {
         matches: next.records.filter(record => record.documentId === doc.id && record.kind === kind && record.unlocated &&
           record.anchor.text === selection.text.trim() && record.context === selection.context),
       };
-      let record = matches.find(record => record.active && record.savedTo.length) ??
-        matches.find(record => record.savedTo.length || record.pendingUndo) ?? matches[0];
+      // A suggested pattern may have a different title from a literal phrase already saved at this span.
+      const title = kind === 'expression' && result.meaning === undefined && result.headword;
+      const candidates = title ? matches.filter(record =>
+        wordTitle(learningCardTitle(record)).toLowerCase() === wordTitle(title).toLowerCase()) : matches;
+      let record = candidates.find(record => record.active && record.savedTo.length) ??
+        candidates.find(record => record.savedTo.length || record.pendingUndo) ?? candidates[0];
       const wasActive = record?.active ?? false;
       if (!record) {
         const originalContext = selection.contextOffset === undefined ? undefined :

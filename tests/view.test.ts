@@ -197,6 +197,37 @@ test('expressions can be collected from translation or explanation and appear in
   await save();
   assert.deepEqual(calls.at(-1), ['collect',selected,explained,'expression','both']);
 });
+test('the contextual expression can be collected under its pattern while retaining the verified source span', async () => {
+  const {view,document,calls}=setup();
+  const sentence = 'Years of drift took him from one temporary job to the next.';
+  const source = 'He took a deep breath.\n\n' + sentence;
+  const selection = snapshot('a.md', source, 'took', source.lastIndexOf('took'));
+  const contextExpression = {
+    title:'take someone from A to B', meaning:'使某人从 A 到 B', sourceText:'took him from one temporary job to the next',
+  };
+  view.render(selection, {...explained, headword:'take', contextExpression});
+  const headings = Array.from(document.querySelectorAll('h3'), heading=>heading.textContent);
+  assert.equal(headings[headings.indexOf('用法') + 1], '本句表达');
+  const card = document.querySelector('.note-digest-context-expression')!;
+  assert.equal(card.querySelector('strong')?.textContent, contextExpression.title);
+  assert.equal(card.querySelector('blockquote')?.textContent, contextExpression.sourceText);
+  assert.equal(calls.length, 0);
+  const save = card.querySelector<HTMLButtonElement>('button')!;
+  assert.equal(save.textContent, '收藏此表达');
+  await save.onclick!(new (domEvent(document))('click') as any);
+  const [, picked, result, kind, target] = calls[0];
+  assert.equal(picked.start, selection.start);
+  assert.equal(picked.end, picked.start + contextExpression.sourceText.length);
+  assert.equal(picked.text, contextExpression.sourceText);
+  assert.equal(picked.context, sentence);
+  assert.equal(picked.contextOffset, sentence.indexOf('took'));
+  assert.deepEqual(result, {headword:contextExpression.title,translation:contextExpression.meaning});
+  assert.deepEqual([kind,target], ['expression','note']);
+  assert.equal(card.querySelector('[role="status"]')?.textContent,'已保存');
+
+  view.render(selection, {...explained, contextExpression:{...contextExpression,sourceText:'took a deep breath'}});
+  assert.equal(document.querySelector('.note-digest-context-expression'), null);
+});
 test('other common usages appear after contextual explanation and are hidden for an empty list', () => {
   const {view,document} = setup();
   const selection = snapshot('a.md','They issued a statement.','issued');

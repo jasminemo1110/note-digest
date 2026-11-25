@@ -79,6 +79,35 @@ test('inflected expressions use one expression note across contexts without shar
   assert.match(f.files.get(first.targets[0].path)!, /\*\*原文词形\*\* worked toward/);
   assert.equal(locateAnchor(text,first.record.anchor),past.start);
 });
+test('a contextual pattern keeps its own note and anchor without replacing a previously saved literal phrase', async () => {
+  const f = fixture();
+  const sentence = 'Years of drift took him from one temporary job to the next.';
+  const phrase = 'took him from one temporary job to the next';
+  const selection = snapshot(path, sentence, phrase);
+  f.files.set(path,sentence);
+  const literal = await f.store.save(selection,{translation:'辗转于一份又一份临时工作'},'expression','note');
+  const pattern = {headword:'take someone from A to B',translation:'使某人从 A 到 B'};
+  const saved = await f.store.save(selection,pattern,'expression','note');
+  const notePath = 'Digest/表达学习/take someone from a to b.md';
+  assert.notEqual(saved.record.id,literal.record.id);
+  assert.deepEqual(saved.record.savedTo,[notePath]);
+  const note = f.files.get(notePath)!;
+  assert.match(note, /# take someone from A to B/);
+  assert.match(note, /\*\*原始语境\*\*\n\n> Years of drift took him from one temporary job to the next\\\./);
+  assert.match(note, /digest_meaning: \["使某人从 A 到 B"\]/);
+  assert.equal(f.files.get(path),sentence);
+
+  const loaded = loadCollection(f.durable());
+  assert.deepEqual(loaded.records.find(record=>record.id===saved.record.id)?.result,pattern);
+  assert.equal(locateAnchor(sentence,saved.record.anchor),selection.start);
+  const restarted = new CollectionStore(loaded,f.port,()=>crypto.randomUUID());
+  const duplicate = await restarted.save(selection,pattern,'expression','note');
+  assert.deepEqual(collectionFeedback(duplicate), {text:'此表达已收藏',duplicate:true});
+  assert.equal(f.files.get(notePath),note);
+  assert.equal((await f.store.undoSave(saved.undo!))?.complete,true);
+  assert.match(f.files.get(notePath)!, /digest_has_cards: false/);
+  assert.deepEqual(f.store.recordsFor(path).map(record=>record.id),[literal.record.id]);
+});
 test('a new learning marker belongs below its heading and keeps a section moved above it in the body', async () => {
   const f = fixture();
   await f.store.save(select(), result, 'word', 'source');

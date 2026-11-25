@@ -7,7 +7,7 @@ import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
 import { isLongSelection, resultMode, showAssessment, type ParagraphTranslation } from './reading-layout';
 import { savedSectionTranslation } from './section-translation';
-import { explanationHeadword, canCollectSelection, isEnglishWord, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, contextExpressionSelection, isEnglishWord, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type ContextExpression, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
 export class DigestView extends ItemView {
   private renderRevision = 0;
@@ -127,6 +127,9 @@ export class DigestView extends ItemView {
       }
       for (const [key,label] of [['meaning','语境含义'],['usage','用法'],['example','例句']] as const) {
         if (result[key]) { explanation.createEl('h3',{text:label}); explanation.createEl('p',{text:result[key],cls:'note-digest-result'}); }
+        if (key === 'usage' && article && result.contextExpression) {
+          this.renderContextExpression(explanation, article, result.contextExpression);
+        }
       }
       if (result.assessment && showAssessment(result.assessment)) {
         explanation.createEl('h3',{text:result.assessment.status === 'uncertain' ? '语境提示' : '表达问题 · '+ASSESSMENT_LABELS[result.assessment.status]});
@@ -442,6 +445,63 @@ export class DigestView extends ItemView {
       }
     };
   }
+  private renderContextExpression(el: HTMLElement, selection: SelectionSnapshot, expression: ContextExpression): void {
+    const source = contextExpressionSelection(selection, expression.sourceText);
+    if (!source) return;
+    const card = el.createDiv({cls:'note-digest-context-expression'});
+    card.createEl('h3',{text:'本句表达'});
+    card.createEl('strong',{text:expression.title,cls:'note-digest-result'});
+    card.createEl('p',{text:expression.meaning,cls:'note-digest-result'});
+    card.createEl('blockquote',{text:expression.sourceText});
+    const save = card.createEl('button',{text:'收藏此表达'});
+    this.renderSaveAction(card, save,
+      () => this.plugin.collect(source, {translation:expression.meaning, headword:expression.title}, 'expression', 'note'),
+      () => { if (card.isConnected) this.renderCollection(source.path); });
+  }
+
+  private renderSaveAction(el: HTMLElement, save: HTMLButtonElement, collect: () => ReturnType<NoteDigestPlugin['collect']>,
+    refresh: () => void) {
+    const feedbackArea=el.createDiv({cls:'note-digest-save-feedback'});
+    const message=feedbackArea.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
+    const undo=feedbackArea.createEl('button',{text:'撤销',attr:{'aria-label':'撤销本次保存'}});
+    let receipt: SaveUndo | undefined;
+    const setUndo = (next?: SaveUndo) => { receipt = next; undo.hidden = !next; };
+    setUndo();
+    save.onclick=async()=>{
+      if (save.disabled) return;
+      setUndo();
+      save.disabled=true;message.textContent='正在保存…';
+      message.classList.remove('note-digest-save-duplicate');
+      try {
+        const feedback = await collect();
+        message.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
+        message.textContent = feedback.text;
+        setUndo(feedback.undo);
+      }
+      catch(error) { message.textContent=error instanceof Error ? error.message : '保存失败，请重试。'; }
+      finally {
+        save.disabled=false;
+        refresh();
+      }
+    };
+    undo.onclick=async()=>{
+      if (!receipt || save.disabled) return;
+      save.disabled = undo.disabled = true;
+      message.textContent = '正在撤销…';
+      try {
+        const report = await this.plugin.undoCollectionSave(receipt);
+        message.textContent = report.text;
+        if (report.complete) setUndo();
+      } catch (error) {
+        message.textContent = error instanceof Error ? error.message : '撤销失败，请重试。';
+      } finally {
+        save.disabled = undo.disabled = false;
+        refresh();
+      }
+    };
+    return {message, setUndo};
+  }
+
   private renderSave(selection: SelectionSnapshot, result: DigestResult, mode: Action): void {
     const located = canCollectSelection(selection);
     const el=this.contentEl.createDiv({cls:'note-digest-save'});
@@ -465,48 +525,12 @@ export class DigestView extends ItemView {
     category.createEl('option',{value:'quote',text:'金句与译文'});
     category.value = mode === 'explain' ? (isEnglishWord(selection.text) ? 'word' : 'expression') : 'quote';
     const save=el.createEl('button',{text:'保存',cls:'mod-cta'});
-    const feedbackArea=el.createDiv({cls:'note-digest-save-feedback'});
-    const message=feedbackArea.createEl('p',{cls:'note-digest-result',attr:{role:'status','aria-live':'polite'}});
-    const undo=feedbackArea.createEl('button',{text:'撤销',attr:{'aria-label':'撤销本次保存'}});
-    let receipt: SaveUndo | undefined;
-    const setUndo = (next?: SaveUndo) => { receipt = next; undo.hidden = !next; };
-    setUndo();
     let refreshUpdate = () => {};
     const refreshCollection = () => {
       if (el.isConnected) { this.renderCollection(selection.path); refreshUpdate(); }
     };
-    save.onclick=async()=>{
-      if (save.disabled) return;
-      setUndo();
-      save.disabled=true;message.textContent='正在保存…';
-      message.classList.remove('note-digest-save-duplicate');
-      try {
-        const feedback = await this.plugin.collect(selection,result,category.value as Kind,target.value as SaveTarget);
-        message.classList.toggle('note-digest-save-duplicate', feedback.duplicate);
-        message.textContent = feedback.text;
-        setUndo(feedback.undo);
-      }
-      catch(error) { message.textContent=error instanceof Error ? error.message : '保存失败，请重试。'; }
-      finally {
-        save.disabled=false;
-        refreshCollection();
-      }
-    };
-    undo.onclick=async()=>{
-      if (!receipt || save.disabled) return;
-      save.disabled = undo.disabled = true;
-      message.textContent = '正在撤销…';
-      try {
-        const report = await this.plugin.undoCollectionSave(receipt);
-        message.textContent = report.text;
-        if (report.complete) setUndo();
-      } catch (error) {
-        message.textContent = error instanceof Error ? error.message : '撤销失败，请重试。';
-      } finally {
-        save.disabled = undo.disabled = false;
-        refreshCollection();
-      }
-    };
+    const {message, setUndo} = this.renderSaveAction(el, save,
+      () => this.plugin.collect(selection,result,category.value as Kind,target.value as SaveTarget), refreshCollection);
     if (mode === 'explain' && located) {
       const updateArea = el.createDiv({cls:'note-digest-actions'});
       const showWordUpdate = () => { updateArea.style.display = category.value === 'word' ? '' : 'none'; };

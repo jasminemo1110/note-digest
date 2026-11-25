@@ -192,7 +192,16 @@ export default class NoteDigestPlugin extends Plugin {
     const offset = locateAnchor(source, record.anchor);
     if (offset === null) { new Notice('原段落已变化或有重复，无法准确定位；收藏快照仍保留。'); return; }
     const line = source.slice(0, offset).split('\n').length - 1;
-    await this.app.workspace.getLeaf(false).openFile(file, {eState: {line}});
+    const leaf = this.app.workspace.getLeaf(false);
+    await leaf.openFile(file, {eState: {line}});
+    const view = leaf.view;
+    if (record.kind === 'expression' && view instanceof MarkdownView && view.file === file && view.getMode() === 'source' &&
+        view.editor.getValue() === source) {
+      const from = view.editor.offsetToPos(offset);
+      const to = view.editor.offsetToPos(offset + record.anchor.text.length);
+      view.editor.setSelection(from, to);
+      view.editor.scrollIntoView({from, to}, true);
+    }
   }
   private removeSelectionButton(): void { this.selectionButton?.remove(); this.selectionButton = undefined; }
   private showSelectionButton(range: Range, label: string, activate: () => void): void {

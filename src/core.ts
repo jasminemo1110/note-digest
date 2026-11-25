@@ -13,6 +13,7 @@ export interface SidebarSelection {
   originalSelection?: SidebarSelection;
 }
 export type DigestSelection = SelectionSnapshot | SidebarSelection;
+export type ContextSelection = Pick<DigestSelection, 'text' | 'context' | 'contextOffset'>;
 export const ASSESSMENT_LABELS = {
   natural: '自然、规范', informal: '口语或非正式表达', unnatural: '可以理解，但不够自然',
   incorrect: '用词或语法有误', uncertain: '语境不足，无法确定',
@@ -32,12 +33,14 @@ export interface CommonUsage {
 }
 export interface WordFamilyEntry { word: string; partOfSpeech: string; meaning: string; pronunciation?: string | null }
 export interface DictionarySense { partOfSpeech: string; meaning: string; pronunciation: string | null }
+export interface ContextExpression { title: string; meaning: string; sourceText: string }
 export interface DigestResult {
   translation: string; meaning?: string; usage?: string; example?: string;
   headword?: string | null;
   commonUsages?: CommonUsage[];
   wordFamily?: WordFamilyEntry[];
   dictionarySenses?: DictionarySense[];
+  contextExpression?: ContextExpression;
   pronunciation?: string | null; assessment?: ExpressionAssessment;
   wordPronunciation?: {uk: string; us: string} | null;
   summary?: string; paragraphs?: import('./reading-layout').ParagraphTranslation[];
@@ -45,6 +48,11 @@ export interface DigestResult {
 
 export function isEnglishWord(text: string): boolean {
   return /^\p{Script=Latin}+(?:['’-]\p{Script=Latin}+)*$/u.test(text.trim().normalize('NFC'));
+}
+
+export function isExpressionTitle(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 120 &&
+    !/[\p{C}\p{Zl}\p{Zp}]/u.test(value) && /\p{Script=Latin}.*\s.*\p{Script=Latin}/u.test(value.trim());
 }
 
 export function isWordFamilyPronunciation(value: string): boolean {
@@ -91,6 +99,49 @@ export function readingSnapshot(path: string, source: string, text: string,
 export function canCollectSelection(selection: SelectionSnapshot): boolean {
   return !selection.readOnly && selection.start >= 0 && selection.end === selection.start + selection.text.length &&
     articleBody(selection.source).slice(selection.start, selection.end) === selection.text;
+}
+
+export function selectedContext({text, context, contextOffset}: ContextSelection, singleSentence = false) {
+  const offset = contextOffset ?? context.indexOf(text);
+  if (offset < 0 || context.slice(offset, offset + text.length) !== text ||
+      (contextOffset === undefined && offset !== context.lastIndexOf(text))) return;
+  const sentences = new Intl.Segmenter('en', {granularity:'sentence'}).segment(context);
+  const first = sentences.containing(offset);
+  const last = sentences.containing(offset + text.length - 1);
+  if (!first || !last || (singleSentence && first.index !== last.index) ||
+      last.index + last.segment.length - first.index > 500) return;
+  return {
+    before: context.slice(first.index, offset).trimStart(),
+    after: context.slice(offset + text.length, last.index + last.segment.length).trimEnd(),
+  };
+}
+
+/** Locate the unique quoted span that contains the selected occurrence. */
+export function locateContextExpression(selection: ContextSelection, sourceText: string) {
+  const focus = selectedContext(selection, true);
+  if (!focus || sourceText.length < selection.text.length) return;
+  const sentence = focus.before + selection.text + focus.after;
+  const offset = focus.before.length;
+  const start = sentence.indexOf(sourceText, Math.max(0, offset + selection.text.length - sourceText.length));
+  if (start < 0 || start > offset) return;
+  const next = sentence.indexOf(sourceText, start + 1);
+  if (next >= 0 && next <= offset) return;
+  const end = start + sourceText.length;
+  const wordCharacter = /[\p{L}\p{M}\p{N}]/u;
+  if ((wordCharacter.test(sentence[start - 1] ?? '') && wordCharacter.test(sentence[start])) ||
+      (wordCharacter.test(sentence[end] ?? '') && wordCharacter.test(sentence[end - 1]))) return;
+  return {context:sentence, offset:start, shift:start - offset};
+}
+
+export function contextExpressionSelection(selection: SelectionSnapshot, sourceText: string): SelectionSnapshot | undefined {
+  if (!canCollectSelection(selection)) return;
+  const match = locateContextExpression(selection, sourceText);
+  if (!match) return;
+  const start = selection.start + match.shift;
+  const end = start + sourceText.length;
+  const expanded = {...selection, start, end, text:sourceText, context:match.context,
+    contextOffset:match.offset, originalSelection:undefined};
+  if (canCollectSelection(expanded)) return expanded;
 }
 
 type LocateWord = (shift: number, word: string) => {start: number; end: number} | undefined;

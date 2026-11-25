@@ -165,3 +165,29 @@ test('a real absence of context or ambiguity in a supplied sentence is not retri
     assert.equal(calls, 1);
   }
 });
+
+test('a reusable pattern is returned only for a verbatim span containing the selected occurrence', async () => {
+  const source = 'Years of drift took him from one temporary job to the next. He took a deep breath.';
+  const selection = snapshot('list.md', source, 'took', source.indexOf('took'));
+  const contextExpression = {
+    title:'take someone from A to B', meaning:'使某人从 A 到 B', sourceText:'took him from one temporary job to the next',
+  };
+  const explanation = {
+    headword:'take', translation:'使……辗转', meaning:'使他辗转于不同工作。', usage:'take someone from A to B',
+    example:'Work took her from city to city. 她因工作辗转于各个城市。', pronunciation:'/teɪk/',
+    assessment:{status:'natural',explanation:'搭配自然。',correction:null}, wordFamily:[], dictionarySenses:[],
+  };
+  for (const suggestion of [contextExpression, null,
+    {...contextExpression, sourceText:'took a deep breath'},
+    {...contextExpression, sourceText:'take him from one temporary job to the next'},
+    {...contextExpression, sourceText:'took him from one temporary jo'},
+    {...contextExpression, title:'take'},
+  ]) {
+    const result = await digest(selection, 'explain', credential, async ({body}) => {
+      assert.match(JSON.parse(body as string).messages[0].content, /Return contextExpression/);
+      return {status:200, json:{choices:[{finish_reason:'stop',
+        message:{content:JSON.stringify({...explanation, contextExpression:suggestion})}}]}};
+    });
+    assert.deepEqual(result, suggestion === contextExpression ? {...explanation, contextExpression} : explanation);
+  }
+});
