@@ -2,12 +2,14 @@ import { frontmatterEnd } from './anchors';
 import { isEnglishWord, isWordFamilyPronunciation, MAX_WORD_FAMILY, type DictionarySense, type WordFamilyEntry } from './core';
 
 export const WORD_NOTE_FOLDER = 'Digest/单词学习/';
+export const EXPRESSION_NOTE_FOLDER = 'Digest/表达学习/';
 
 export function wordNoteBody(note: string): string {
   return note.slice(frontmatterEnd(note));
 }
 
-export function addWordVocabulary(note: string, word: string, senses: DictionarySense[] = [], pronunciation?: string | null): string {
+export function addWordVocabulary(note: string, word: string, senses: DictionarySense[] = [], pronunciation?: string | null,
+  contextualMeaning?: string): string {
   const labels = senses.map(sense => senses.some(other => other !== sense && other.partOfSpeech === sense.partOfSpeech)
     ? `${sense.partOfSpeech}（${sense.pronunciation ?? '读音待核对'}）` : sense.partOfSpeech);
   const singlePronunciation = senses[0]?.pronunciation ?? pronunciation;
@@ -17,7 +19,9 @@ export function addWordVocabulary(note: string, word: string, senses: Dictionary
     digest_ipa: senses.length > 1
       ? senses.flatMap(sense => sense.pronunciation ? [`${sense.partOfSpeech} · ${sense.pronunciation}`] : [])
       : singlePronunciation ? [singlePronunciation] : [],
-    digest_meaning: senses.map((sense, index) => senses.length === 1 ? sense.meaning : `${labels[index]} · ${sense.meaning}`),
+    digest_meaning: senses.length
+      ? senses.map((sense, index) => senses.length === 1 ? sense.meaning : `${labels[index]} · ${sense.meaning}`)
+      : contextualMeaning ? [contextualMeaning] : [],
     digest_has_cards: true,
   };
   const end = frontmatterEnd(note);

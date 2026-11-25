@@ -26,8 +26,10 @@ test('expression cards keep their context and available explanation through save
   const explanation = {...result, translation:'令人信服的论据', headword:'compelling argument'};
   const saved = await f.store.save(phrase, explanation, 'expression', 'both');
   assert.deepEqual(saved.targets.map(target => target.ok), [true,true]);
-  assert.match(saved.targets[1].path, /^Digest\/文章学习\//);
-  assert.equal(saved.record.wordNote, undefined);
+  const notePath = 'Digest/表达学习/compelling argument.md';
+  assert.equal(saved.targets[1].path, notePath);
+  assert.equal(saved.record.wordNote?.path, notePath);
+  assert.match(f.files.get(notePath)!, /digest_meaning: \["令人信服的论据"\]/);
   assert.equal(locateAnchor(source,saved.record.anchor), phrase.start);
   for (const target of saved.targets) {
     const note = f.files.get(target.path)!;
@@ -44,16 +46,38 @@ test('expression cards keep their context and available explanation through save
   assert.deepEqual(collectionFeedback(duplicate), {text:'此表达已收藏',duplicate:true});
   const quote = await restarted.save(phrase, explanation, 'quote', 'note');
   assert.notEqual(quote.record.id, saved.record.id);
+  assert.match(quote.targets[0].path, /^Digest\/文章学习\//);
   const otherPhrase = snapshot(path, source, 'compelling story');
   const translation = await restarted.save(otherPhrase, {translation:'引人入胜的故事'}, 'expression', 'both');
+  const translationNote = 'Digest/表达学习/compelling story.md';
+  assert.equal(translation.targets[1].path, translationNote);
+  assert.match(f.files.get(translationNote)!, /digest_meaning: \["引人入胜的故事"\]/);
   assert.deepEqual(loadCollection(f.durable()).records.find(record => record.id === translation.record.id)?.result,
     {translation:'引人入胜的故事'});
   assert.equal((await restarted.undoSave(translation.undo!))?.complete, true);
+  assert.match(f.files.get(translationNote)!, /digest_has_cards: false/);
   for (const target of saved.targets) {
     const note = f.files.get(target.path)!;
     assert.match(note, /#### compelling argument\n/);
     assert.doesNotMatch(note, /#### compelling story\n/);
   }
+});
+test('inflected expressions use one expression note across contexts without sharing a word note', async () => {
+  const f = fixture();
+  const text = 'She worked toward her goal. They work toward a different goal.';
+  f.files.set(path, text);
+  const input = {...result, headword:'work toward', translation:'努力实现'};
+  const past = snapshot(path, text, 'worked toward');
+  const present = snapshot(path, text, 'work toward');
+  const word = await f.store.save(present,input,'word','note');
+  const first = await f.store.save(past,input,'expression','note');
+  const second = await f.store.save(present,input,'expression','note');
+  assert.equal(word.targets[0].path,'Digest/单词学习/work toward.md');
+  assert.equal(first.targets[0].path,'Digest/表达学习/work toward.md');
+  assert.equal(second.targets[0].path,first.targets[0].path);
+  assert.notEqual(first.record.id,second.record.id);
+  assert.match(f.files.get(first.targets[0].path)!, /\*\*原文词形\*\* worked toward/);
+  assert.equal(locateAnchor(text,first.record.anchor),past.start);
 });
 test('a new learning marker belongs below its heading and keeps a section moved above it in the body', async () => {
   const f = fixture();

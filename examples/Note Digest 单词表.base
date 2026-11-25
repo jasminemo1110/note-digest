@@ -1,14 +1,17 @@
 filters:
   and:
-    - file.inFolder("Digest/单词学习")
+    - or:
+        - file.inFolder("Digest/单词学习")
+        - file.inFolder("Digest/表达学习")
     - file.ext == "md"
     - note.digest_has_cards == true
 formulas:
   word: file.asLink(note.digest_word)
+  kind: if(file.inFolder("Digest/表达学习"), "表达", "单词")
   pos: if(note.digest_pos, html(list(note.digest_pos).map(escapeHTML(value)).join("<br>")), "")
   ipa: if(note.digest_ipa, html(list(note.digest_ipa).map(escapeHTML(value)).join("<br>")), "")
   meaning: if(note.digest_meaning, html(list(note.digest_meaning).map(escapeHTML(value)).join("<br>")), "")
-  family: >-
+  family: |-
     if(note.digest_family && note.digest_family_notes,
       list(note.digest_family).map([value.split("\t"), list(note.digest_family_notes)[index].asFile()])
         .map([value[0], if(value[1] && value[1].inFolder("Digest/单词学习") &&
@@ -22,7 +25,9 @@ formulas:
         .map(if(value[0], value[0].asLink(value[1]), value[1])), "")
 properties:
   formula.word:
-    displayName: 单词
+    displayName: 单词或表达
+  formula.kind:
+    displayName: 类型
   formula.pos:
     displayName: 词性
   formula.ipa:
@@ -33,9 +38,10 @@ properties:
     displayName: 同族词
 views:
   - type: table
-    name: 全部单词
+    name: 单词与表达
     order:
       - formula.word
+      - formula.kind
       - formula.pos
       - formula.ipa
       - formula.meaning
@@ -46,6 +52,7 @@ views:
     rowHeight: tall
     columnSize:
       formula.word: 130
+      formula.kind: 76
       formula.pos: 125
       formula.ipa: 200
       formula.meaning: 225

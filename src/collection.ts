@@ -1,9 +1,9 @@
-import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
+import { explanationHeadword, canCollectSelection, ASSESSMENT_LABELS, escapeMarkdown, isEnglishWord, validateResult, type DigestResult, type SelectionSnapshot, type SidebarSelection } from './core';
 import { showAssessment } from './reading-layout';
 import { mergeCardBody } from './card-update';
 import { shortContext } from './reading-actions';
 import { articleBody, digestText, LEARNING_BOUNDARY, LEARNING_HEADING, locateAnchor, makeAnchor, normalizeCollectionRange, type Anchor } from './anchors';
-import { addWordVocabulary, indexWordFamily, markWordNoteCards, WORD_NOTE_FOLDER, wordNoteBody } from './word-vocabulary';
+import { addWordVocabulary, EXPRESSION_NOTE_FOLDER, indexWordFamily, markWordNoteCards, WORD_NOTE_FOLDER, wordNoteBody } from './word-vocabulary';
 
 export const COLLECTION_LABELS = {word: '单词', expression: '表达', quote: '金句'} as const;
 export type Kind = keyof typeof COLLECTION_LABELS;
@@ -105,7 +105,7 @@ export function loadCollection(input: unknown): CollectionData {
       if (!pending || typeof pending.id !== 'string' || !ID.test(pending.id) || !Array.isArray(pending.paths) ||
           !pending.paths.length || !pending.paths.every(validPath)) throw new Error('收藏撤销数据损坏。');
     }
-    if (record.wordNote !== undefined && (record.kind !== 'word' || !validWordNote(record.wordNote))) throw new Error('单词笔记数据损坏。');
+    if (record.wordNote !== undefined && (record.kind === 'quote' || !validWordNote(record.wordNote))) throw new Error('词条笔记数据损坏。');
     recordIds.add(record.id);
     record.result = validateCardResult(record.result, record.kind);
   }
@@ -195,10 +195,16 @@ function previousRecordMarkdown(record: LearningRecord, _doc: SourceDocument): s
   }
   return text + commonUsagesMarkdown(result) + '\n';
 }
+export function learningCardTitle(record: Pick<LearningCard, 'kind' | 'anchor' | 'result'>): string {
+  const {kind, anchor, result} = record;
+  if (kind === 'word') return explanationHeadword(anchor.text, result);
+  if (kind === 'expression' && result.headword && !isEnglishWord(result.headword)) return result.headword;
+  return anchor.text;
+}
 function groupedRecordMarkdown(record: LearningCard, historicalWordPrefix = false, context?: string): string {
   const result = record.result;
   const prefix = record.kind === 'quote' ? '金句：' : historicalWordPrefix && record.kind === 'word' ? '词语：' : '';
-  const headword = record.kind === 'word' ? explanationHeadword(record.anchor.text, result) : record.anchor.text;
+  const headword = learningCardTitle(record);
   let text = `\n\n<!-- note-digest:record:${record.id} -->\n#### ${prefix}${escapeMarkdown(headword).replace(/\r?\n/g, ' ')}`;
   if (record.kind === 'word' || (record.kind === 'expression' && result.pronunciation)) {
     text += `\n\n**音标** ${escapeMarkdown(result.pronunciation ?? '不适用或无法可靠确定')}`;
@@ -355,15 +361,16 @@ function appendGroupedCard(current: string, kind: Kind, card: string): string {
   if (startIndex < 0 || endIndex < startIndex || current.indexOf(start, startIndex + 1) >= 0 || current.indexOf(end, endIndex + 1) >= 0) throw new Error('学习分组标记已改动，请先恢复标记或选择另一个保存位置。');
   return current.slice(0, endIndex) + card + '\n' + current.slice(endIndex);
 }
-function prepareWordNote(current: string | null, word: WordNote, title: string, result?: DigestResult): string {
+function prepareWordNote(current: string | null, word: WordNote, title: string, result?: DigestResult, kind: Kind = 'word'): string {
   const heading = escapeMarkdown(Array.from(title).slice(0, 120).join('')).replace(/[%$^]/g, char => `&#${char.charCodeAt(0)};`);
   const base = current ?? `${wordNoteHeader(word)}\n# ${heading}\n\n${WORD_SOURCES_START}\n\n${WORD_SOURCES_END}\n`;
   if (!ownedWordNote(base, word)) throw new Error('目标笔记已有其他内容，已保留该文件。');
-  return markWordNoteCards(addWordVocabulary(base, title, result?.dictionarySenses, result?.pronunciation), true);
+  return markWordNoteCards(addWordVocabulary(base, title, result?.dictionarySenses, result?.pronunciation,
+    kind === 'expression' ? result?.translation : undefined), true);
 }
 function prepareArticleWordNote(current: string | null, record: LearningRecord, doc: SourceDocument): string {
-  const title = wordTitle(explanationHeadword(record.anchor.text, record.result));
-  return addWordSource(prepareWordNote(current, record.wordNote!, title, record.result), doc);
+  const title = wordTitle(learningCardTitle(record));
+  return addWordSource(prepareWordNote(current, record.wordNote!, title, record.result, record.kind), doc);
 }
 /** Explicit migration moves only byte-identical generated cards into typed groups. */
 export function compactLegacyCards(current: string, records: LearningRecord[], doc: SourceDocument): {text: string; count: number} {
@@ -408,20 +415,23 @@ export class CollectionStore {
   }
   notePathFor(path: string): string | undefined { return this.data.documents.find(doc => doc.path === path)?.notePath; }
   isLearningNote(path: string): boolean {
-    return path === SIDEBAR_NOTE_PATH || path.startsWith(WORD_NOTE_FOLDER) || this.data.documents.some(doc => doc.notePath === path) ||
+    return path === SIDEBAR_NOTE_PATH || path.startsWith(WORD_NOTE_FOLDER) || path.startsWith(EXPRESSION_NOTE_FOLDER) || this.data.documents.some(doc => doc.notePath === path) ||
       this.data.records.some(record => record.wordNote?.path === path) || !!this.data.sidebarWords?.some(card => card.note.path === path);
   }
   private async planWordNote(data: CollectionData, record: LearningRecord): Promise<WordNote> {
-    return record.wordNote ??= await this.findWordNote(data, wordTitle(explanationHeadword(record.anchor.text, record.result)));
+    const kind = record.kind === 'expression' ? 'expression' : 'word';
+    return record.wordNote ??= await this.findWordNote(data, wordTitle(learningCardTitle(record)), kind);
   }
-  private async findWordNote(data: CollectionData, title: string): Promise<WordNote> {
+  private async findWordNote(data: CollectionData, title: string, kind: Exclude<Kind, 'quote'> = 'word'): Promise<WordNote> {
     const key = title.toLowerCase();
     const id = await digestText(key);
-    const known = data.records.find(other => other.wordNote?.id === id)?.wordNote ?? data.sidebarWords?.find(card => card.note.id === id)?.note;
+    const known = data.records.find(other => other.kind === kind && other.wordNote?.id === id)?.wordNote ??
+      (kind === 'word' ? data.sidebarWords?.find(card => card.note.id === id)?.note : undefined);
     const name = Array.from(key.replace(/[<>:"/\\|?*\[\]#^\x00-\x1f]/g, '-').replace(/^[. ]+|[. ]+$/g, '')).slice(0, 40).join('') || 'word';
     const reserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name);
     const fileName = name === key && !reserved ? name : `${name.replaceAll('.', '-')}--${id.slice(0, 16)}`;
-    return known ?? {id, path: `${WORD_NOTE_FOLDER}${fileName}.md`};
+    const folder = kind === 'word' ? WORD_NOTE_FOLDER : EXPRESSION_NOTE_FOLDER;
+    return known ?? {id, path: `${folder}${fileName}.md`};
   }
   private indexFamily(note: string, previous: string | null): Promise<string> {
     return indexWordFamily(note, previous, async word => (await this.findWordNote(this.data, wordTitle(word))).path);
@@ -828,7 +838,7 @@ export class CollectionStore {
         record: structuredClone(record),
         targets: [{path: selection.path, ok: true, message: '已收藏'}],
       };
-      if (kind === 'word' && !record.savedTo.includes(doc.notePath)) await this.planWordNote(next, record);
+      if (kind === 'expression' || (kind === 'word' && !record.savedTo.includes(doc.notePath))) await this.planWordNote(next, record);
       const independentPath = record.wordNote?.path ?? doc.notePath;
       record.active = true; record.deletionPending = false;
       // Durable intent before external writes: retries retain identity even after a partial failure/crash.

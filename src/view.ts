@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type NoteDigestPlugin from './main';
 import { articleFinished, articlePartIsLocated, MAX_SECTIONS, sectionAt, sectionSource, type ArticleSummary } from './article-summary';
-import { COLLECTION_LABELS, type Kind, type SaveTarget, type SaveUndo } from './collection';
+import { COLLECTION_LABELS, learningCardTitle, type Kind, type SaveTarget, type SaveUndo } from './collection';
 import { shortContext, sidebarSelection } from './reading-actions';
 import type { ClaudianExcerpt } from './claudian-draft';
 import { makeAnchor } from './anchors';
@@ -585,11 +585,11 @@ export class DigestView extends ItemView {
       list.createEl('h4',{text:title});
       for(const record of items) {
         const row=list.createDiv({cls:'note-digest-saved-row'});
-        row.createEl('p',{text:record.kind === 'word' ? explanationHeadword(record.anchor.text,record.result) : record.anchor.text});
+        row.createEl('p',{text:learningCardTitle(record)});
         row.createEl('p',{text:record.result.translation,cls:'note-digest-saved-translation'});
         const wordNote = record.wordNote?.path;
         if (wordNote && record.savedTo.includes(wordNote) && this.app.vault.getAbstractFileByPath(wordNote)) {
-          const open=row.createEl('button',{text:'打开单词笔记'});
+          const open=row.createEl('button',{text:`打开${title}笔记`});
           open.onclick=()=>{void this.app.workspace.openLinkText(wordNote,'',false);};
         }
         let remove: HTMLButtonElement | undefined;
