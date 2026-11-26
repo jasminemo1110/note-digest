@@ -48,7 +48,7 @@ test('cache keeps identical words in different contexts and explanation separate
     const payload = JSON.parse(request.body as string);
     const selected = JSON.parse(payload.messages[1].content);
     return response(payload.messages[0].content.includes('Also return headword')
-      ? {translation:'正确', headword:'right', meaning:'合乎事实', usage:'be right', example:'You are right. 你说对了',
+      ? {translation:'正确', headword:'right', meaning:'合乎事实', usage:'be right 表示说得对。', example:'You are right. 你说对了',
         pronunciation:null, commonUsages:[{partOfSpeech:'副词', meaning:'向右', example:'turn right（向右转）'}],
         wordFamily:[{word:'rightly', partOfSpeech:'副词', meaning:'正确地'}], dictionarySenses:[],
         assessment:{status:'natural', explanation:'自然', correction:null}}

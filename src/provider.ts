@@ -69,10 +69,14 @@ function validateExplanation(value: unknown, selection: ContextSelection): Diges
   const {commonUsages, wordFamily, dictionarySenses, ...required} = input;
   const result = validateResult(required, 'explain');
   if (result.headword === undefined) throw new Error('AI 未返回词头。');
+  if ([result.meaning, result.usage, result.assessment?.explanation].some(field => !/\p{Script=Han}/u.test(field ?? ''))) {
+    throw new ResultFormatError('AI 返回的语境解说未使用中文，请重试。');
+  }
   const expression = contextExpression(input.contextExpression, selection);
   return {...result, ...validateVocabulary(input, result, vocabularyFields), ...(expression && {contextExpression:expression})};
 }
 
+const explanationLanguageRule = '语境含义（meaning）、用法（usage）和表达判断（assessment.explanation）的说明文字必须使用简体中文，可引用英文词语和搭配。例句（example）用英文并附简体中文译文。保留英文词头、句型、原文和建议改法，以 IPA 标注音标。';
 const expressionRule = 'Return contextExpression as one useful multiword collocation or reusable pattern that actually contains the selected occurrence in its sentence, or null if none. It has three short single-line strings: title (canonical English pattern with verbs in base form and placeholders such as someone, something, A or B when useful), meaning (Simplified Chinese gloss for the pattern in this context), and sourceText (the shortest complete contiguous verbatim span realizing the pattern, including the selected text and its original inflection). Copy sourceText exactly from the sentence reconstructed from selectedContext.before + selected + selectedContext.after. For selected "took" in "Years of drift took him from one temporary job to the next.", use title "take someone from A to B" and sourceText "took him from one temporary job to the next". Use null for isolated words, constructions without a confirmed source span, ordinary word combinations with no reusable pattern, or suggestions drawn from other examples or senses.';
 const vocabularyRules = {
   commonUsages: `Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, very common senses or parts of speech of the headword, ordered by usefulness in everyday English or general writing. Actively check other parts of speech and include the core everyday senses when they differ from the contextual sense. Exclude the current sense, collocations that just rephrase it, rare, dated or specialized senses, and senses of unrelated words that share the selected inflected spelling. Prefer one good entry to padding the list. Each entry has three short single-line strings: partOfSpeech (Simplified Chinese label), meaning (concise Simplified Chinese gloss), and example (one short English example or collocation with its Simplified Chinese translation). For "issue" meaning "发布", a useful entry is 名词 · 问题 · a serious issue（一个严重的问题）. Return [] only if there is no clear addition or headword is null.`,
@@ -115,7 +119,8 @@ ${expressionRule}
 Always include both vocabulary arrays. Evaluate them independently of one another.
 ${vocabularyRules.commonUsages}
 ${vocabularyRules.wordFamily}
-Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_SENSES} entries for the headword, considering general English independently of the selected sentence. Each entry has partOfSpeech (brief Simplified Chinese label, such as 名词, 动词, 形容词, or 动词短语), meaning (only the core Simplified Chinese glosses for that part of speech and pronunciation, separated by 、 or ；), and pronunciation (IPA in slashes; when standard variants differ use 英 /.../；美 /.../; use null if unsure). Use separate entries for distinct common parts of speech or distinct pronunciations associated with different meanings, even if the part of speech is the same. Combine related common meanings under the same part of speech and pronunciation. Omit examples, contextual elaboration, rare uses, and derivatives. Include at least the main common entry for a reliable headword; use [] when headword is null.` : '';
+Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_SENSES} entries for the headword, considering general English independently of the selected sentence. Each entry has partOfSpeech (brief Simplified Chinese label, such as 名词, 动词, 形容词, or 动词短语), meaning (only the core Simplified Chinese glosses for that part of speech and pronunciation, separated by 、 or ；), and pronunciation (IPA in slashes; when standard variants differ use 英 /.../；美 /.../; use null if unsure). Use separate entries for distinct common parts of speech or distinct pronunciations associated with different meanings, even if the part of speech is the same. Combine related common meanings under the same part of speech and pronunciation. Omit examples, contextual elaboration, rare uses, and derivatives. Include at least the main common entry for a reliable headword; use [] when headword is null.
+${explanationLanguageRule}` : '';
   const task = action === 'summarize'
     ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.'
     : action === 'explain'
@@ -145,7 +150,7 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
     'pronunciation (IPA string or null), and assessment (object with status, explanation and correction). ' +
     'Use an English example with a Chinese translation. Assessment status is natural, informal, unnatural, incorrect or uncertain. ' +
     'Use a nonempty explanation and set correction to null for natural or uncertain. For unnatural or incorrect, provide a minimal English correction. ' +
-    expressionRule + offsetRule : undefined;
+    expressionRule + ' ' + explanationLanguageRule + offsetRule : undefined;
   const result = await requestJson(key, requestUrl, languageInstruction('en') +
     ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules + offsetRule,
     {...(focus && {selectedContext: focus}), selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
@@ -159,7 +164,7 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
 
 const MODEL = 'deepseek-flash';
 class ResultFormatError extends Error {
-  constructor() { super('AI 返回格式异常，请重试。'); }
+  constructor(message = 'AI 返回格式异常，请重试。') { super(message); }
 }
 class ContextMismatchError extends Error {
   constructor() { super('AI 未能依据已提供的原句解释，请重试。'); }
@@ -170,7 +175,10 @@ async function requestJson<T>(key: string, requestUrl: Transport, prompt: string
   const validated = (value: unknown): T => {
     let result: T;
     try { result = validate(value); }
-    catch { throw new ResultFormatError(); }
+    catch (error) {
+      if (error instanceof ResultFormatError) throw error;
+      throw new ResultFormatError();
+    }
     if (recovery?.contradictsContext?.(result)) throw new ContextMismatchError();
     return result;
   };

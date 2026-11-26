@@ -58,7 +58,7 @@ test('Japanese interface is reserved but not enabled', () => {
 });
 
 test('explanation request asks for IPA and distinguishes errors from register; results stay structured', async () => {
-  const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null},
+  const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'可修饰论点，如 a compelling argument。', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null},
     commonUsages:[{partOfSpeech:'形容词',meaning:'引人入胜的',example:'a compelling story（一个引人入胜的故事）'}],
     wordFamily:[{word:'compel',pronunciation:'/kəmˈpel/',partOfSpeech:'动词',meaning:'迫使'}],
     dictionarySenses:[{partOfSpeech:'形容词',meaning:'令人信服的；引人入胜的',pronunciation:'/kəmˈpelɪŋ/'}]};
@@ -151,13 +151,51 @@ test('an unusable explanation retries once with a shorter JSON request using the
 
 const stripSelection = snapshot('list.md', 'A narrow strip of land emerged as the tide went out.', 'strip');
 const stripExplanation = {headword:'strip', translation:'狭长的一片', meaning:'这里作名词，指狭长的一片陆地。',
-  usage:'a strip of land', example:'A strip of forest runs along the river. 一带狭长的树林沿河延伸。', pronunciation:'/strɪp/',
+  usage:'a strip of land 表示一条狭长的陆地。', example:'A strip of forest runs along the river. 一带狭长的树林沿河延伸。', pronunciation:'/strɪp/',
   assessment:{status:'natural', explanation:'用法自然。', correction:null}};
 const stripVocabulary = {
   commonUsages:[{partOfSpeech:'动词', meaning:'去掉表层', example:'strip the paint off the door（去掉门上的漆）'}],
   wordFamily:[{word:'stripper', pronunciation:'/ˈstrɪpər/', partOfSpeech:'名词', meaning:'去除剂（如脱漆剂）'}],
 };
 const jsonResponse = (value: unknown) => ({status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(value)}}]}});
+
+test('an English explanation for a selected phrase retries in Chinese and caches only the corrected result', async () => {
+  const sentence = "The king's sudden death led to a dispute over the succession.";
+  const selection = snapshot('list.md', sentence, ' over the succession');
+  const answer = {headword:'succession', translation:'继承', meaning:'这里指王位的继承。',
+    usage:'a dispute over the succession 表示对王位继承权有争议。', pronunciation:'/səkˈseʃn/',
+    example:'The dispute over the succession divided the royal family. 继承权争议使王室分裂。',
+    assessment:{status:'natural', explanation:'这里的搭配自然。', correction:null}};
+  const english = {...answer, meaning:'The process of taking over a title after the previous holder dies.',
+    usage:'In this context, succession refers to the transfer of the throne.'};
+  const requests: {system:string; user:string}[] = [];
+  const cache = new ResultCache({load:()=>null, save:()=>{}});
+  const lookup = () => digest(selection, 'explain', credential, async ({body}) => {
+    const [system, user] = JSON.parse(body as string).messages;
+    requests.push({system:system.content, user:user.content});
+    return jsonResponse(requests.length === 1 ? english : answer);
+  }, {cache});
+  assert.deepEqual(await lookup(), answer);
+  assert.deepEqual(await lookup(), answer);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].user, requests[0].user);
+  for (const {system} of requests) assert.match(system, /用法（usage）和表达判断（assessment\.explanation）的说明文字必须使用简体中文/);
+});
+
+test('a repeated English-only explanation field produces a language error after one retry', async () => {
+  for (const answer of [
+    {...stripExplanation, meaning:'A long, narrow piece of something.'},
+    {...stripExplanation, usage:'Often followed by a phrase beginning with of.'},
+    {...stripExplanation, assessment:{...stripExplanation.assessment, explanation:'Natural in this sentence.'}},
+  ]) {
+    let calls = 0;
+    await assert.rejects(digest(stripSelection, 'explain', credential, async () => {
+      calls++;
+      return jsonResponse(answer);
+    }), /语境解说未使用中文/);
+    assert.equal(calls, 2);
+  }
+});
 
 test('the first strip lookup checks empty or invalid vocabulary and reuses the supplemented result', async () => {
   const storage = new Map<string, unknown>();
@@ -286,7 +324,7 @@ test('a reusable pattern is returned only for a verbatim span containing the sel
     title:'take someone from A to B', meaning:'使某人从 A 到 B', sourceText:'took him from one temporary job to the next',
   };
   const explanation = {
-    headword:'take', translation:'使……辗转', meaning:'使他辗转于不同工作。', usage:'take someone from A to B',
+    headword:'take', translation:'使……辗转', meaning:'使他辗转于不同工作。', usage:'take someone from A to B 表示使某人从 A 到 B。',
     example:'Work took her from city to city. 她因工作辗转于各个城市。', pronunciation:'/teɪk/',
     assessment:{status:'natural',explanation:'搭配自然。',correction:null}, ...takeVocabulary, dictionarySenses:[],
   };
