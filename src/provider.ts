@@ -46,25 +46,57 @@ function claimsMissingSentence(value: unknown): boolean {
     typeof field === 'string' && MISSING_SENTENCE_CLAIMS.some(claim => claim.test(field)));
 }
 
+const vocabularyFields = ['commonUsages', 'wordFamily', 'dictionarySenses'] as const;
+type VocabularyField = typeof vocabularyFields[number];
+
+function validateVocabulary(value: unknown, explanation: DigestResult, fields: readonly VocabularyField[]) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ResultFormatError();
+  const input = value as Record<string, unknown>;
+  const lists: Pick<DigestResult, VocabularyField> = {};
+  for (const field of fields) {
+    if (input[field] === undefined) continue;
+    try {
+      const checked = validateResult({...explanation, [field]:input[field]}, 'explain');
+      Object.assign(lists, {[field]:checked[field]});
+    } catch { /* Supplementary lists can be omitted when invalid. */ }
+  }
+  return lists;
+}
+
 function validateExplanation(value: unknown, selection: ContextSelection): DigestResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ResultFormatError();
   const input = value as Record<string, unknown>;
   const {commonUsages, wordFamily, dictionarySenses, ...required} = input;
   const result = validateResult(required, 'explain');
   if (result.headword === undefined) throw new Error('AI 未返回词头。');
-  for (const field of ['commonUsages', 'wordFamily', 'dictionarySenses'] as const) {
-    if (input[field] === undefined) continue;
-    try {
-      const checked = validateResult({...required, [field]:input[field]}, 'explain');
-      Object.assign(result, {[field]:checked[field]});
-    } catch { /* Supplementary lists can be omitted when invalid. */ }
-  }
   const expression = contextExpression(input.contextExpression, selection);
-  if (expression) result.contextExpression = expression;
-  return result;
+  return {...result, ...validateVocabulary(input, result, vocabularyFields), ...(expression && {contextExpression:expression})};
 }
 
 const expressionRule = 'Return contextExpression as one useful multiword collocation or reusable pattern that actually contains the selected occurrence in its sentence, or null if none. It has three short single-line strings: title (canonical English pattern with verbs in base form and placeholders such as someone, something, A or B when useful), meaning (Simplified Chinese gloss for the pattern in this context), and sourceText (the shortest complete contiguous verbatim span realizing the pattern, including the selected text and its original inflection). Copy sourceText exactly from the sentence reconstructed from selectedContext.before + selected + selectedContext.after. For selected "took" in "Years of drift took him from one temporary job to the next.", use title "take someone from A to B" and sourceText "took him from one temporary job to the next". Use null for isolated words, constructions without a confirmed source span, ordinary word combinations with no reusable pattern, or suggestions drawn from other examples or senses.';
+const vocabularyRules = {
+  commonUsages: `Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, very common senses or parts of speech of the headword, ordered by usefulness in everyday English or general writing. Actively check other parts of speech and include the core everyday senses when they differ from the contextual sense. Exclude the current sense, collocations that just rephrase it, rare, dated or specialized senses, and senses of unrelated words that share the selected inflected spelling. Prefer one good entry to padding the list. Each entry has three short single-line strings: partOfSpeech (Simplified Chinese label), meaning (concise Simplified Chinese gloss), and example (one short English example or collocation with its Simplified Chinese translation). For "issue" meaning "发布", a useful entry is 名词 · 问题 · a serious issue（一个严重的问题）. Return [] only if there is no clear addition or headword is null.`,
+  wordFamily: `Return wordFamily as an array of up to ${MAX_WORD_FAMILY} distinct, common English headwords from the same word family. Check for a directly related base word or derivative even when the contextual use has no other common senses. Prioritize other parts of speech. Each entry has word (English dictionary headword), pronunciation (standard IPA for that word and part of speech, use /.../ or 英 /.../；美 /.../ when they differ, null if unsure), partOfSpeech (Simplified Chinese label), and meaning (short Simplified Chinese gloss). For confirmation, a useful entry is {"word":"confirm","pronunciation":"英 /kənˈfɜːm/；美 /kənˈfɝːm/","partOfSpeech":"动词","meaning":"确认；证实"}. Exclude inflections, spelling variants, synonyms, and words merely sharing a root with no useful modern connection. Skip obscure derivatives. Return [] only if there is no clear addition or headword is null.`,
+};
+
+async function supplementWord(result: DigestResult, key: string, requestUrl: Transport, options?: ResultRequest): Promise<DigestResult> {
+  const {headword} = result;
+  if (!headword || !isEnglishWord(headword)) return result;
+  const missing = (['commonUsages', 'wordFamily'] as const).filter(field => !result[field]?.length);
+  if (!missing.length) return result;
+  const prompt = 'Check the English headword as in a learner’s dictionary. The contextual gloss and explanation identify the sense already covered. ' +
+    'Return one JSON object with exactly the requested arrays. Supply useful, common entries where they exist.\n' +
+    missing.map(field => vocabularyRules[field]).join('\n');
+  try {
+    const input = {headword, contextualGloss:result.translation.slice(0, 240), contextualMeaning:result.meaning?.slice(0, 500)};
+    const lists = await requestJson(key, requestUrl, prompt, input, value => {
+      const checked = validateVocabulary(value, result, missing);
+      if (!Object.keys(checked).length) throw new ResultFormatError();
+      return checked;
+    }, options);
+    return {...result, ...lists};
+  } catch { return result; }
+}
 
 export async function digest(selection: ContextSelection, action: Action, key: string,
   requestUrl: Transport, options?: ResultRequest): Promise<DigestResult> {
@@ -80,8 +112,9 @@ explanation is a nonempty Chinese explanation grounded in the supplied context; 
 correction must be a minimal corrected English expression or sentence for incorrect/unnatural; may offer a more formal equivalent for informal, explicitly as an alternative, not an error correction; must be null for natural/uncertain. Do not silently replace the original selected text or translate only a corrected form. Explain original intent and the correction separately.
 usage and example focus on the sense and part of speech used in the supplied context. example contains English and Chinese.
 ${expressionRule}
-Return commonUsages as an array with up to ${MAX_COMMON_USAGES} other distinct, very common senses or parts of speech of the headword, ordered by usefulness in everyday English or general writing. Include a core sense even if the selected usage is less common. Exclude the current sense, collocations that just rephrase it, rare, dated or specialized senses, and senses of unrelated words that share the selected inflected spelling. Prefer one good entry to padding the list. Use [] when there are no clear additions or headword is null. Each entry is an object with three short single-line strings: partOfSpeech (for example 动词 or 名词), meaning (concise Simplified Chinese gloss), and example (one short English example or collocation with its Simplified Chinese translation). For example, if "issue" means "发表、发布" as in "issue a statement", a useful additional entry is 名词 · 问题 · a serious issue（一个严重的问题）. These are AI suggestions, not authoritative judgments.
-Return wordFamily as an array of up to ${MAX_WORD_FAMILY} distinct, common English headwords from the same word family, prioritizing other parts of speech. Each entry has word (English dictionary headword), pronunciation (standard IPA for that word and part of speech, use /.../ or 英 /.../；美 /.../ when they differ, null if unsure), partOfSpeech (Simplified Chinese label), and meaning (short Simplified Chinese gloss). For confirmation, a useful entry is {"word":"confirm","pronunciation":"英 /kənˈfɜːm/；美 /kənˈfɝːm/","partOfSpeech":"动词","meaning":"确认；证实"}. Include a directly related base word or derivative. Exclude inflections, spelling variants, synonyms, and words merely sharing a root with no useful modern connection. Skip obscure derivatives and return [] if headword is null or there are no clear additions.
+Always include both vocabulary arrays. Evaluate them independently of one another.
+${vocabularyRules.commonUsages}
+${vocabularyRules.wordFamily}
 Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_SENSES} entries for the headword, considering general English independently of the selected sentence. Each entry has partOfSpeech (brief Simplified Chinese label, such as 名词, 动词, 形容词, or 动词短语), meaning (only the core Simplified Chinese glosses for that part of speech and pronunciation, separated by 、 or ；), and pronunciation (IPA in slashes; when standard variants differ use 英 /.../；美 /.../; use null if unsure). Use separate entries for distinct common parts of speech or distinct pronunciations associated with different meanings, even if the part of speech is the same. Combine related common meanings under the same part of speech and pronunciation. Omit examples, contextual elaboration, rare uses, and derivatives. Include at least the main common entry for a reliable headword; use [] when headword is null.` : '';
   const task = action === 'summarize'
     ? 'Summarize only the selected text; do not claim to cover the whole article. Context only helps disambiguate.'
@@ -113,14 +146,15 @@ Return dictionarySenses as a compact vocabulary index of up to ${MAX_DICTIONARY_
     'Use an English example with a Chinese translation. Assessment status is natural, informal, unnatural, incorrect or uncertain. ' +
     'Use a nonempty explanation and set correction to null for natural or uncertain. For unnatural or incorrect, provide a minimal English correction. ' +
     expressionRule + offsetRule : undefined;
-  return requestJson(key, requestUrl, languageInstruction('en') +
+  const result = await requestJson(key, requestUrl, languageInstruction('en') +
     ` Return a JSON object with nonempty string fields: ${fields}. ${task}` + meaningRule + explanationRules + wordTranslationRules + offsetRule,
     {...(focus && {selectedContext: focus}), selected: selection.text, context: selection.context, selectionOffset: selection.contextOffset}, value => {
       if (action === 'explain') return validateExplanation(value, selection);
-      const result = validateResult(value, action);
-      if (wordTranslation) result.wordPronunciation = validateWordPronunciation((value as Record<string, unknown>).wordPronunciation);
-      return result;
+      const checked = validateResult(value, action);
+      if (wordTranslation) checked.wordPronunciation = validateWordPronunciation((value as Record<string, unknown>).wordPronunciation);
+      return checked;
     }, options, {formatRetryPrompt, contradictsContext:hasSentence ? claimsMissingSentence : undefined});
+  return action === 'explain' && isEnglishWord(selection.text) ? supplementWord(result, key, requestUrl, options) : result;
 }
 
 const MODEL = 'deepseek-flash';

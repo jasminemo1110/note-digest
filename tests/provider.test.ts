@@ -59,9 +59,12 @@ test('Japanese interface is reserved but not enabled', () => {
 
 test('explanation request asks for IPA and distinguishes errors from register; results stay structured', async () => {
   const explanation = {headword:'compelling', translation:'有说服力的', meaning:'形容论点令人信服', usage:'a compelling argument', example:'Her argument is compelling. 她的论点很有说服力。', pronunciation:'/kəmˈpelɪŋ/', assessment:{status:'natural', explanation:'与 argument 搭配自然。', correction:null},
+    commonUsages:[{partOfSpeech:'形容词',meaning:'引人入胜的',example:'a compelling story（一个引人入胜的故事）'}],
     wordFamily:[{word:'compel',pronunciation:'/kəmˈpel/',partOfSpeech:'动词',meaning:'迫使'}],
     dictionarySenses:[{partOfSpeech:'形容词',meaning:'令人信服的；引人入胜的',pronunciation:'/kəmˈpelɪŋ/'}]};
+  let calls = 0;
   const transport: Transport = async request => {
+    calls++;
     const prompt = JSON.parse(request.body as string).messages[0].content;
     assert.match(prompt, /IPA/); assert.match(prompt, /informal/); assert.match(prompt, /uncertain/);
     assert.match(prompt, /Do not silently replace/);
@@ -74,6 +77,7 @@ test('explanation request asks for IPA and distinguishes errors from register; r
     return {status:200, json:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(explanation)}}]}};
   };
   assert.deepEqual(await digest(selected, 'explain', credential, transport), explanation);
+  assert.equal(calls, 1);
 });
 
 test('inflected lookup teaches the base headword without changing the quoted source payload', async () => {
@@ -145,6 +149,73 @@ test('an unusable explanation retries once with a shorter JSON request using the
   }
 });
 
+const stripSelection = snapshot('list.md', 'A narrow strip of land emerged as the tide went out.', 'strip');
+const stripExplanation = {headword:'strip', translation:'狭长的一片', meaning:'这里作名词，指狭长的一片陆地。',
+  usage:'a strip of land', example:'A strip of forest runs along the river. 一带狭长的树林沿河延伸。', pronunciation:'/strɪp/',
+  assessment:{status:'natural', explanation:'用法自然。', correction:null}};
+const stripVocabulary = {
+  commonUsages:[{partOfSpeech:'动词', meaning:'去掉表层', example:'strip the paint off the door（去掉门上的漆）'}],
+  wordFamily:[{word:'stripper', pronunciation:'/ˈstrɪpər/', partOfSpeech:'名词', meaning:'去除剂（如脱漆剂）'}],
+};
+const jsonResponse = (value: unknown) => ({status:200, json:{choices:[{finish_reason:'stop', message:{content:JSON.stringify(value)}}]}});
+
+test('the first strip lookup checks empty or invalid vocabulary and reuses the supplemented result', async () => {
+  const storage = new Map<string, unknown>();
+  const cache = () => new ResultCache({load:key=>storage.get(key), save:(key,value)=>{storage.set(key,value);}});
+  const requests: {prompt:string; input:Record<string, unknown>}[] = [];
+  const transport: Transport = async ({body}) => {
+    const [system, user] = JSON.parse(body as string).messages;
+    requests.push({prompt:system.content, input:JSON.parse(user.content)});
+    return requests.length === 1
+      ? jsonResponse({...stripExplanation, commonUsages:[], wordFamily:[{...stripVocabulary.wordFamily[0], pronunciation:'stripper'}]})
+      : jsonResponse(stripVocabulary);
+  };
+  const expected = {...stripExplanation, ...stripVocabulary};
+  assert.deepEqual(await digest(stripSelection, 'explain', credential, transport, {cache:cache()}), expected);
+  assert.deepEqual(await digest(stripSelection, 'explain', credential, transport, {cache:cache()}), expected);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].prompt, /Always include both vocabulary arrays/);
+  assert.match(requests[1].prompt, /Return commonUsages/);
+  assert.match(requests[1].prompt, /Return wordFamily/);
+  assert.deepEqual(requests[1].input, {headword:'strip', contextualGloss:stripExplanation.translation, contextualMeaning:stripExplanation.meaning});
+});
+
+test('a single word recovered by the shorter request checks only the vocabulary it is missing', async () => {
+  const prompts: string[] = [];
+  const result = await digest(stripSelection, 'explain', credential, async ({body}) => {
+    prompts.push(JSON.parse(body as string).messages[0].content);
+    if (prompts.length === 1) return jsonResponse({...stripExplanation, usage:null});
+    if (prompts.length === 2) return jsonResponse({...stripExplanation, commonUsages:stripVocabulary.commonUsages});
+    return jsonResponse({...stripVocabulary, commonUsages:[]});
+  });
+  assert.deepEqual(result, {...stripExplanation, ...stripVocabulary});
+  assert.equal(prompts.length, 3);
+  assert.match(prompts[1], /Required keys/);
+  assert.match(prompts[2], /Return wordFamily/);
+  assert.doesNotMatch(prompts[2], /Return commonUsages/);
+});
+
+test('supplement failure keeps the core explanation and the next lookup can recover without regenerating it', async () => {
+  const cache = new ResultCache({load:()=>null, save:()=>{}});
+  let calls = 0;
+  const lookup = () => digest(stripSelection, 'explain', credential, async () => {
+    calls++;
+    if (calls === 1) return jsonResponse(stripExplanation);
+    if (calls === 2) return {status:503, json:{}};
+    return jsonResponse({commonUsages:stripVocabulary.commonUsages, wordFamily:[]});
+  }, {cache});
+  assert.deepEqual(await lookup(), stripExplanation);
+  const expected = {...stripExplanation, commonUsages:stripVocabulary.commonUsages, wordFamily:[]};
+  assert.deepEqual(await lookup(), expected);
+  assert.deepEqual(await lookup(), expected);
+  assert.equal(calls, 3);
+});
+
+const takeVocabulary = {
+  commonUsages:[{partOfSpeech:'动词',meaning:'拿走',example:'take the books home（把书拿回家）'}],
+  wordFamily:[{word:'taker',pronunciation:'/ˈteɪkə/',partOfSpeech:'名词',meaning:'接受者'}],
+};
+
 test('context explanation anchors repeated words to the selected sentence and retries a false missing-sentence claim', async () => {
   const sentence = 'Years of drift took him from one temporary job to the next.';
   const source = '## drift\n\n- **n. 漂泊** · ' + sentence + '\n  多年的漂泊让他辗转于一份又一份临时工作。\n\nThey took part in a study.';
@@ -154,7 +225,7 @@ test('context explanation anchors repeated words to the selected sentence and re
     usage:'take someone from A to B 表示使某人从 A 到 B。',
     example:'The job took her from city to city. 这份工作让她辗转于不同城市。',
     pronunciation:'/teɪk/', assessment:{status:'natural', explanation:'搭配自然。', correction:null},
-    wordFamily:[], dictionarySenses:[],
+    ...takeVocabulary, dictionarySenses:[],
   };
   const contradiction = {...explanation, meaning:'具体义因原句未给出而无法确定。',
     assessment:{status:'uncertain', explanation:'上下文中没有出现被选中的“took”所在句子。', correction:null}};
@@ -217,7 +288,7 @@ test('a reusable pattern is returned only for a verbatim span containing the sel
   const explanation = {
     headword:'take', translation:'使……辗转', meaning:'使他辗转于不同工作。', usage:'take someone from A to B',
     example:'Work took her from city to city. 她因工作辗转于各个城市。', pronunciation:'/teɪk/',
-    assessment:{status:'natural',explanation:'搭配自然。',correction:null}, wordFamily:[], dictionarySenses:[],
+    assessment:{status:'natural',explanation:'搭配自然。',correction:null}, ...takeVocabulary, dictionarySenses:[],
   };
   for (const suggestion of [contextExpression, null,
     {...contextExpression, sourceText:'took a deep breath'},
