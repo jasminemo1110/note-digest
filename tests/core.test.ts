@@ -221,6 +221,16 @@ test('confirmed inline insertion refreshes source without changing selected Engl
   assert.equal(updated.source.slice(updated.start,updated.end),'emerge');
   assert.throws(()=>insertTranslation(updated.source,updated,'浮现','inline'),/已包含/);
 });
+test('word annotation undo preserves an identical annotation elsewhere and refuses a changed source', async () => {
+  const {translationInsertion, wordAnnotationRemoval} = await import('../src/core');
+  const source = 'A [natural](https://example.com) choice. Another natural（自然的） choice.';
+  const selected = snapshot('a.md', source, 'natural', source.indexOf('natural'));
+  const inserted = translationInsertion(source, selected, '自然的', 'inline');
+  assert.match(inserted.after, /\[natural\]\(https:\/\/example\.com\)（自然的）/);
+  assert.deepEqual(wordAnnotationRemoval(inserted.after, selected, inserted).selection, selected);
+  assert.throws(() => wordAnnotationRemoval(inserted.after.replace('Another', 'One more'), selected, inserted), /原文已修改/);
+  assert.throws(() => wordAnnotationRemoval(inserted.after.replace('（自然的）', '（我的注释）'), selected, inserted), /原文已修改/);
+});
 test('confirmed below insertion preserves selection; manual or unrelated changes cannot rebase it',async()=>{
   const {translationInsertion,rebaseSelectionAfterInsertion}=await import('../src/core');
   const selected=snapshot('a.md','New ideas emerge slowly.','emerge');

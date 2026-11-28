@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
-import {normalizeWordLookup,readingSnapshot,snapshot,translationInsertion,type DigestResult} from '../src/core';
+import {normalizeWordLookup,readingSnapshot,snapshot,translationInsertion,wordAnnotationRemoval,type DigestResult,type InsertionReceipt,type SelectionSnapshot} from '../src/core';
 import {proseText} from '../src/markdown-source';
 import {planArticleSummary,sectionAt,selectDigestBatch} from '../src/article-summary';
 import {changeSectionTranslation} from '../src/section-translation';
@@ -91,7 +91,7 @@ test('toolbar precedes original; insert buttons directly follow translation; sav
   await save.onclick!(new (domEvent(document))('click') as any);
   assert.equal(calls[0][3],'quote');assert.equal(calls[0][4],'both');
 });
-test('word translation inserts either IPA or meaning independently at the word boundary and prevents duplicates', async () => {
+test('word translation toggles IPA and meaning independently and protects existing annotations', async () => {
   const source = '**今日主题：生态演替与自然恢复（Ecological Succession & Natural Recovery）**\n';
   const selection = snapshot('a.md', source, 'Natural ');
   const translation = {translation:'自然的（自然形成） [形容词] | 天生的', wordPronunciation:{uk:'/ˈnætʃ.ər.əl/', us:'/ˈnætʃ.ɚ.əl/'}};
@@ -103,14 +103,22 @@ test('word translation inserts either IPA or meaning independently at the word b
   for (const [first, second] of [['音标','含义'], ['含义','音标']] as const) {
     const {view,document,calls,plugin} = setup();
     let written = source;
-    Object.assign(plugin, {insert: async (selection: Parameters<typeof translationInsertion>[1], text: string) => {
-      const receipt = translationInsertion(written, selection, text, 'inline');
-      written = receipt.after;
-      return receipt;
-    }});
-    const button = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="在选区后加括号（${label}）"]`)!;
-    const insert = async (label: string) => {
-      const control = button(label);
+    Object.assign(plugin, {
+      insert: async (selection: SelectionSnapshot, text: string) => {
+        const receipt = translationInsertion(written, selection, text, 'inline');
+        written = receipt.after;
+        return receipt;
+      },
+      undoWordAnnotation: async (_selection: SelectionSnapshot, original: SelectionSnapshot, removed: InsertionReceipt,
+        kept?: {text: string; receipt: InsertionReceipt}) => {
+        const removal = wordAnnotationRemoval(written, original, removed, kept);
+        written = removal.after;
+        return removal;
+      },
+    });
+    const addButton = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="在选区后加括号（${label}）"]`)!;
+    const undoButton = (label: string) => [...document.querySelectorAll('button')].find(button => button.textContent === `撤销${label}`)!;
+    const click = async (control: HTMLButtonElement) => {
       assert.equal(control.disabled, false);
       await control.onclick!(new (domEvent(document))('click') as any);
     };
@@ -120,13 +128,12 @@ test('word translation inserts either IPA or meaning independently at the word b
     assert.deepEqual([...document.querySelectorAll('.note-digest-word-row p')].map(node=>node.textContent),
       ['英 /ˈnætʃ.ər.əl/ · 美 /ˈnætʃ.ɚ.əl/', translation.translation]);
     assert.equal(written, source);
-    await insert(first);
+    await click(addButton(first));
     assert.equal(written, source.replace('Natural ', 'Natural'+annotations[first]+' '));
-    assert.equal(button(first).disabled, true);
-    await insert(second);
+    assert.equal(addButton(first), null);
+    await click(addButton(second));
     assert.equal(written, source.replace('Natural ', 'Natural'+annotations[second]+annotations[first]+' '));
-    assert.equal(button(first).disabled, true);
-    assert.equal(button(second).disabled, true);
+    const withBoth = written;
 
     [...document.querySelectorAll('button')].find(button=>button.textContent==='重新生成')!.click();
     const [, regenerated, mode, force] = calls.at(-1);
@@ -136,15 +143,31 @@ test('word translation inserts either IPA or meaning independently at the word b
     assert.equal(mode, 'translate');
     assert.equal(force, true);
 
-    const paragraph = proseText(written);
-    const reopened = readingSnapshot('a.md', written, 'Natural', {
-      section:{lineStart:0,lineEnd:0,text:written},
+    await click(undoButton(first));
+    assert.equal(written, source.replace('Natural ', 'Natural'+annotations[second]+' '));
+    await click(addButton(first));
+    assert.equal(written, source.replace('Natural ', 'Natural'+annotations[first]+annotations[second]+' '));
+    await click(undoButton(first));
+    assert.equal(written, source.replace('Natural ', 'Natural'+annotations[second]+' '));
+    await click(undoButton(second));
+    assert.equal(written, source);
+    assert.equal(addButton(first).disabled, false);
+    assert.equal(addButton(second).disabled, false);
+    [...document.querySelectorAll('button')].find(button => button.textContent === '语境解释')!.click();
+    assert.equal(calls.at(-1)[1].source, source);
+    assert.equal(calls.at(-1)[1].context, selection.context);
+
+    const paragraph = proseText(withBoth);
+    const reopened = readingSnapshot('a.md', withBoth, 'Natural', {
+      section:{lineStart:0,lineEnd:0,text:withBoth},
       paragraph, offset:paragraph.indexOf('Natural'), tag:'p',
     });
-    assert.equal(reopened.start, written.indexOf('Natural'));
+    assert.equal(reopened.start, withBoth.indexOf('Natural'));
     view.render(reopened, translation);
-    assert.match(button(first).title, /已包含/);
-    assert.match(button(second).title, /已包含/);
+    assert.match(addButton(first).title, /已包含/);
+    assert.match(addButton(second).title, /已包含/);
+    assert.equal(undoButton(first), undefined);
+    assert.equal(undoButton(second), undefined);
   }
 });
 

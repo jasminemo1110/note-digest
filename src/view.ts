@@ -9,6 +9,15 @@ import { isLongSelection, resultMode, showAssessment, type ParagraphTranslation 
 import { savedSectionTranslation } from './section-translation';
 import { explanationHeadword, canCollectSelection, contextExpressionSelection, isEnglishWord, translationInsertion, ASSESSMENT_LABELS, rebaseSelectionAfterInsertion, type InsertionReceipt, type Action, type ContextExpression, type DigestResult, type DigestSelection, type SelectionSnapshot, type SidebarSelection } from './core';
 export const VIEW_TYPE = 'note-digest-learning';
+interface WordAnnotation {
+  label: '音标' | '含义';
+  text: string;
+  receipt: InsertionReceipt;
+}
+interface WordAnnotations {
+  original: SelectionSnapshot;
+  added: WordAnnotation[];
+}
 export class DigestView extends ItemView {
   private renderRevision = 0;
   private selectionView?: DigestSelection;
@@ -65,7 +74,8 @@ export class DigestView extends ItemView {
       button.onclick = () => { void run(); };
     }
   }
-  render(selection?: DigestSelection, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result)): void {
+  render(selection?: DigestSelection, result?: DigestResult, status = '', mode: Action | 'idle' = resultMode(result),
+    wordAnnotations?: WordAnnotations): void {
     this.selectionView = selection;
     const el = this.startRender();
     const revision = this.renderRevision;
@@ -96,7 +106,7 @@ export class DigestView extends ItemView {
       return;
     }
     if (mode === 'translate' && !result.paragraphs && isEnglishWord(selection.text)) {
-      this.renderWordTranslation(el, selection, result, revision);
+      this.renderWordTranslation(el, selection, result, revision, wordAnnotations);
     } else if (mode === 'translate') {
       const paragraphs = result.paragraphs ?? [{source:selection.text,translation:result.translation}];
       for (const paragraph of paragraphs) {
@@ -163,7 +173,8 @@ export class DigestView extends ItemView {
       this.renderSidebarSave(selection, result);
     }
   }
-  private renderWordTranslation(el: HTMLElement, selection: DigestSelection, result: DigestResult, revision: number): void {
+  private renderWordTranslation(el: HTMLElement, selection: DigestSelection, result: DigestResult, revision: number,
+    wordAnnotations?: WordAnnotations): void {
     const word = selection.text.trim();
     const lookup = el.createDiv({cls:'note-digest-word-translation'});
     const context = {source:this.sourceContext(selection)};
@@ -181,12 +192,26 @@ export class DigestView extends ItemView {
         target = {...selection, readOnly:true};
       }
     }
-    const renderRow = (label: string, text: string) => {
+    const renderRow = (label: WordAnnotation['label'], text: string) => {
       const row = lookup.createDiv({cls:'note-digest-word-row'});
       const value = row.createEl('p', {text, cls:'note-digest-result', attr:{'aria-label':label}});
       this.claudianContexts.set(value, context);
       const range = target;
       if (!range) return;
+      const annotation = wordAnnotations?.added.find(entry => entry.label === label);
+      if (wordAnnotations && annotation) {
+        const button = row.createEl('button', {text:`撤销${label}`});
+        const kept = wordAnnotations.added.find(entry => entry !== annotation);
+        this.bindSourceWrite(button, revision,
+          () => this.plugin.undoWordAnnotation(range, wordAnnotations.original, annotation.receipt, kept),
+          ({selection, remaining}) => {
+            const annotations = kept && remaining
+              ? {...wordAnnotations, added:[{...kept, receipt:remaining}]}
+              : undefined;
+            this.render(selection, result, `已撤销${label}。`, 'translate', annotations);
+          });
+        return;
+      }
       const button = row.createEl('button', {text:'在选区后加括号', attr:{'aria-label':`在选区后加括号（${label}）`}});
       try { translationInsertion(range.source, range, text, 'inline'); }
       catch (error) {
@@ -194,9 +219,14 @@ export class DigestView extends ItemView {
         if (error instanceof Error) button.title = error.message;
         return;
       }
-      this.bindInsertion(button, range, text, 'inline', revision, receipt => {
+      this.bindSourceWrite(button, revision, () => this.plugin.insert(range, text, 'inline'), receipt => {
         const updated = rebaseSelectionAfterInsertion(range, receipt);
-        this.render(updated ?? range, result, updated ? `已添加${label}。` : `已添加${label}，请重新选择原词后继续。`, 'translate');
+        const annotations = updated && {
+          original: wordAnnotations?.original ?? range,
+          added: [...(wordAnnotations?.added ?? []), {label, text, receipt}],
+        };
+        this.render(updated ?? range, result, updated ? `已添加${label}。` : `已添加${label}，请重新选择原词后继续。`,
+          'translate', annotations ?? undefined);
       });
     };
     const pronunciation = result.wordPronunciation;
@@ -427,19 +457,19 @@ export class DigestView extends ItemView {
       catch { continue; }
       writes ??= parent.createDiv({cls:'note-digest-actions note-digest-insert'});
       const button = writes.createEl('button', {text:label});
-      this.bindInsertion(button, selection, translation, mode, revision, onInserted);
+      this.bindSourceWrite(button, revision, () => this.plugin.insert(selection, translation, mode), onInserted);
     }
     if (!writes) parent.createEl('p',{text:'无法安全插入，译文保留在侧栏。',cls:'note-digest-muted'});
   }
-  private bindInsertion(button: HTMLButtonElement, selection: SelectionSnapshot, text: string, mode: 'below' | 'inline',
-    revision: number, onInserted: (receipt: InsertionReceipt) => void): void {
+  private bindSourceWrite<T>(button: HTMLButtonElement, revision: number, write: () => Promise<T | undefined>,
+    onWritten: (result: T) => void): void {
     button.onclick = async () => {
       if (button.disabled || revision !== this.renderRevision) return;
       const controls = [...this.contentEl.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(:disabled), select:not(:disabled)')];
       controls.forEach(control => { control.disabled = true; });
       try {
-        const receipt = await this.plugin.insert(selection, text, mode);
-        if (receipt && revision === this.renderRevision) onInserted(receipt);
+        const result = await write();
+        if (result !== undefined && revision === this.renderRevision) onWritten(result);
       } finally {
         if (revision === this.renderRevision) controls.forEach(control => { control.disabled = false; });
       }

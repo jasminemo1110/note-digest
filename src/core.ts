@@ -363,3 +363,21 @@ export function rebaseSelectionAfterInsertion(selection: SelectionSnapshot, rece
   return {...selection,source:receipt.after,start,end,
     ...(original && {originalSelection: rebaseSelectionAfterInsertion(original, receipt) ?? original})};
 }
+
+export function wordAnnotationRemoval(current: string, original: SelectionSnapshot, removed: InsertionReceipt,
+  kept?: {text: string; receipt: InsertionReceipt}) {
+  const following = kept?.receipt.before === removed.after ? kept.receipt : undefined;
+  if (current !== (following ?? removed).after) throw new Error('原文已修改，请重新选择。');
+
+  // If the later annotation stays, validate its Markdown on its own.
+  const remaining = following && kept ? translationInsertion(original.source, original, kept.text, 'inline') : kept?.receipt;
+  const selection = remaining ? rebaseSelectionAfterInsertion(original, remaining) : original;
+  // A second annotation is inserted at the same boundary, before the first one.
+  const offset = removed.offset + (following?.length ?? 0);
+  const end = offset + removed.length;
+  if (!selection || current.slice(offset, end) !== removed.after.slice(removed.offset, removed.offset + removed.length) ||
+      current.slice(0, offset) + current.slice(end) !== selection.source) {
+    throw new Error('无法确认括号标注的位置，撤销未执行。');
+  }
+  return {after: selection.source, selection, remaining};
+}

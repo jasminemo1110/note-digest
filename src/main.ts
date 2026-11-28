@@ -1,5 +1,5 @@
 import { ItemView, MarkdownView, MarkdownRenderChild, Notice, Plugin, TFile, requestUrl, type Editor, type WorkspaceLeaf } from 'obsidian';
-import { canCollectSelection, normalizeWordLookup, readingSnapshot, snapshot, translationInsertion, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
+import { canCollectSelection, normalizeWordLookup, readingSnapshot, snapshot, translationInsertion, wordAnnotationRemoval, type DigestSelection, type InsertionReceipt, type SelectionSnapshot, type SidebarSelection, type Action } from './core';
 import { digest, summarizeArticle, translateArticlePart, translateParagraphs } from './provider';
 import { articleFileSource, articleFinished, overviewInsertion, planArticleSummary, planSelectedSummary, rebaseAfterOverview, sectionAt, selectDigestBatch, translationChunks, type ArticlePart, type ArticleSummary } from './article-summary';
 import { isLongSelection, type ParagraphTranslation } from './reading-layout';
@@ -653,20 +653,29 @@ export default class NoteDigestPlugin extends Plugin {
     }
   }
   async insert(selection: SelectionSnapshot, translation: string, mode: 'below' | 'inline'): Promise<InsertionReceipt | undefined> {
+    return this.writeSelection(selection, current => translationInsertion(current, selection, translation, mode), '已添加到原文。');
+  }
+  async undoWordAnnotation(selection: SelectionSnapshot, original: SelectionSnapshot, removed: InsertionReceipt,
+    kept?: {text: string; receipt: InsertionReceipt}) {
+    return this.writeSelection(selection, current => wordAnnotationRemoval(current, original, removed, kept), '已撤销括号标注。');
+  }
+  private async writeSelection<T extends {after: string}>(selection: SelectionSnapshot, change: (current: string) => T,
+    success: string): Promise<T | undefined> {
     try {
       const file = this.app.vault.getAbstractFileByPath(selection.path);
       if (!(file instanceof TFile)) throw new Error('原文已移动或删除，请重新选择。');
-      const openViews = this.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view)
-        .filter((view): view is MarkdownView => view instanceof MarkdownView && view.file?.path === selection.path && view.getMode() === 'source');
-      if (openViews.some(view => view.editor.getValue() !== selection.source)) throw new Error('编辑器中的原文已改变，请重新选择。');
-      let receipt: InsertionReceipt | undefined;
+      let receipt: T | undefined;
       await this.app.vault.process(file, current => {
-        receipt = translationInsertion(current, selection, translation, mode);
+        const hasUnsavedEdits = this.app.workspace.getLeavesOfType('markdown').some(({view}) =>
+          view instanceof MarkdownView && view.file?.path === selection.path && view.getMode() === 'source' &&
+          view.editor.getValue() !== selection.source);
+        if (hasUnsavedEdits) throw new Error('编辑器中的原文已改变，请重新选择。');
+        receipt = change(current);
         return receipt.after;
       });
-      if (!receipt || await this.app.vault.read(file) !== receipt.after) throw new Error('插入后原文又有变化，请重新选择。');
+      if (!receipt || await this.app.vault.read(file) !== receipt.after) throw new Error('操作后原文又有变化，请重新选择。');
       this.generation++;
-      new Notice('已添加到原文。');
+      new Notice(success);
       return receipt;
     } catch (error) { new Notice(error instanceof Error ? error.message : '写入失败。'); }
   }
